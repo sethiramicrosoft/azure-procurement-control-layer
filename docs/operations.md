@@ -16,15 +16,20 @@
 |---|---|---|
 | `/api/health` | GET | Service heartbeat |
 | `/api/summary` | GET | Dashboard summary |
+| `/api/config` | GET/PUT | Control-plane defaults (emails, budgets, thresholds) |
 | `/api/control-plane/status` | GET | Control-plane configuration/status |
 | `/api/requests` | GET/POST | List and create requests |
 | `/api/requests/{id}/decision` | POST | Approve/reject request |
+| `/api/requests/{id}/assign` | POST | Create/reuse assignment (subscription/RG + budget cap) |
 | `/api/requests/{id}/exception` | POST | Request exception |
 | `/api/requests/{id}/exception-decision` | POST | Approve/reject exception |
 | `/api/requests/{id}/entitlement` | POST | Issue deployment entitlement token |
 | `/api/requests/{id}/deploy` | POST | Deploy with entitlement token |
 | `/api/reconciliation/import` | POST | Import usage rows for reconciliation |
 | `/api/reconciliation/summary` | GET | Reconciliation status |
+| `/api/reconciliation/run` | POST | Recompute budget and chargeback snapshots |
+| `/api/chargeback/summary` | GET | Cost by cost center and PO |
+| `/api/rbac/drift-report` | POST | Human high-privilege RBAC drift report |
 | `/api/audit` | GET | Audit trail with hash chain |
 
 ## Reconciliation import payload

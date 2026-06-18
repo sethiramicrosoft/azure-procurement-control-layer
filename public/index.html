@@ -31,6 +31,21 @@
 
     <main class="grid">
       <section class="panel">
+        <h2>Control plane inputs</h2>
+        <form id="config-form" class="form">
+          <input name="managerApproverEmail" placeholder="Manager approver email" required />
+          <input name="procurementApproverEmail" placeholder="Procurement approver email" required />
+          <input name="financeApproverEmail" placeholder="Finance approver email" required />
+          <div class="row">
+            <input name="defaultBudgetCap" type="number" min="1" step="1" placeholder="Default budget cap" required />
+            <input name="defaultExceptionDurationHours" type="number" min="1" step="1" placeholder="Default exception hours" required />
+          </div>
+          <input name="defaultBudgetThresholds" placeholder="Budget thresholds, comma-separated (e.g. 80,100)" required />
+          <button type="submit">Save defaults</button>
+        </form>
+      </section>
+
+      <section class="panel">
         <h2>New request</h2>
         <form id="request-form" class="form">
           <input name="title" placeholder="Request title" required />
@@ -45,6 +60,14 @@
           <div class="row">
             <input name="costCenter" placeholder="CostCenter" value="ENG001" required />
             <input name="poId" placeholder="PO_ID" value="PO-0001" required />
+          </div>
+          <div class="row">
+            <input name="managerApproverEmail" placeholder="Manager approver email" required />
+            <input name="procurementApproverEmail" placeholder="Procurement approver email" required />
+          </div>
+          <div class="row">
+            <input name="desiredBudgetCap" type="number" min="1" step="1" placeholder="Budget cap for this request" required />
+            <input name="budgetThresholdsCsv" placeholder="Thresholds % (e.g. 80,100)" required />
           </div>
           <input name="owner" placeholder="Owner" required />
           <input name="estimatedMonthlyCost" type="number" min="0" step="0.01" placeholder="Estimated monthly cost" required />

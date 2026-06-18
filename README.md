@@ -33,6 +33,7 @@ APCL addresses this by making deployment permission conditional on approved inte
 ### Implemented in this repo
 
 - Request intake API + UI with procurement metadata.
+- Configurable control-plane inputs (approver emails, budget cap, budget thresholds, exception duration).
 - Approval/rejection workflow.
 - Exception workflow (request, approve/reject, expiry).
 - Entitlement token issuance for approved/exception-approved requests.
@@ -102,6 +103,8 @@ Open:
 http://localhost:3000
 ```
 
+Set control-plane defaults in the **Control plane inputs** form (approver emails, budget cap, threshold percentages, default exception duration) before creating requests.
+
 ### B. Deploy Azure policy baseline
 
 ```powershell
@@ -118,6 +121,12 @@ http://localhost:3000
 
 ```powershell
 ./scripts/rbac-hardening-baseline.ps1 -SubscriptionId <sub-id>
+```
+
+### E. Run reconciliation sample
+
+```powershell
+./scripts/invoke-reconciliation.ps1
 ```
 
 ## Internal system integration guide
@@ -161,9 +170,11 @@ Use APCL as the control-plane API behind your existing front-door workflow.
 
 - `GET /api/health`
 - `GET /api/summary`
+- `GET|PUT /api/config`
 - `GET /api/control-plane/status`
 - `GET|POST /api/requests`
 - `POST /api/requests/{id}/decision`
+- `POST /api/requests/{id}/assign`
 - `POST /api/requests/{id}/exception`
 - `POST /api/requests/{id}/exception-decision`
 - `POST /api/requests/{id}/entitlement`

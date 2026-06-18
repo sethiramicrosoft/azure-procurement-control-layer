@@ -13,6 +13,8 @@ const PUBLIC_DIR = path.join(ROOT, 'public');
 const PORT = process.env.PORT ? Number(process.env.PORT) : 3000;
 const ENTITLEMENT_SECRET = process.env.APCL_ENTITLEMENT_SECRET || 'apcl-dev-secret-change';
 const ENTITLEMENT_TTL_MINUTES = Number(process.env.APCL_ENTITLEMENT_TTL_MINUTES || 60);
+const DEPLOYMENT_MODE = String(process.env.APCL_DEPLOYMENT_MODE || 'local').toLowerCase(); // local | webhook
+const DEPLOYMENT_WEBHOOK_URL = process.env.APCL_DEPLOYMENT_WEBHOOK_URL || '';
 
 const policyPack = {
   allowedLocations: ['australiaeast', 'australiasoutheast'],
@@ -32,6 +34,226 @@ function nextExceptionNumber(request) {
   return `EX-${String(last + 1).padStart(4, '0')}`;
 }
 
+function findOrCreateBudget(state, costCenter, monthlyLimit = 10000, currency = 'AUD', thresholds = [80, 100]) {
+  let budget = (state.budgets || []).find(b => b.costCenter === costCenter);
+  if (!budget) {
+    budget = {
+      costCenter,
+      monthlyLimit,
+      spent: 0,
+      forecast: 0,
+      currency,
+      thresholds,
+    };
+    state.budgets.push(budget);
+  }
+  budget.thresholds = budget.thresholds || thresholds;
+  return budget;
+}
+
+function nextAssignmentNumber(state) {
+  const last = [...(state.assignments || [])]
+    .map(a => Number(String(a.number || '').split('-').pop()))
+    .filter(Number.isFinite)
+    .sort((a, b) => b - a)[0] || 0;
+  return `ASN-${String(last + 1).padStart(4, '0')}`;
+}
+
+function deriveResourceGroupName(policy, request) {
+  const safe = String(request.number || request.id).toLowerCase().replace(/[^a-z0-9-]/g, '');
+  return `${policy.resourceGroupPrefix || 'rg-apcl'}-${safe}`.slice(0, 80);
+}
+
+function ensureAssignmentAndBudget(state, request, actor) {
+  if (request.assignmentId) {
+    const existing = state.assignments.find(a => a.id === request.assignmentId);
+    if (existing) {
+      findOrCreateBudget(
+        state,
+        request.costCenter,
+        existing.budgetCap,
+        'AUD',
+        request.budgetThresholds && request.budgetThresholds.length ? request.budgetThresholds : state.config.defaultBudgetThresholds
+      );
+      return { assignment: existing, created: false };
+    }
+  }
+  const policy = state.assignmentPolicies.find(p => p.costCenter === request.costCenter) || {
+    costCenter: request.costCenter,
+    subscription: request.subscription,
+    resourceGroupPrefix: 'rg-apcl',
+    monthlyBudgetCap: request.desiredBudgetCap || state.config.defaultBudgetCap || 10000,
+  };
+  const assignment = {
+    id: makeId('asn'),
+    number: nextAssignmentNumber(state),
+    requestId: request.id,
+    requestNumber: request.number,
+    costCenter: request.costCenter,
+    poId: request.poId,
+    subscription: policy.subscription || request.subscription,
+    resourceGroup: deriveResourceGroupName(policy, request),
+    budgetCap: Number(request.desiredBudgetCap || policy.monthlyBudgetCap || state.config.defaultBudgetCap || 10000),
+    status: 'assigned',
+    assignedBy: actor,
+    assignedAt: nowIso(),
+  };
+  state.assignments.unshift(assignment);
+  request.assignmentId = assignment.id;
+  findOrCreateBudget(
+    state,
+    request.costCenter,
+    assignment.budgetCap,
+    'AUD',
+    request.budgetThresholds && request.budgetThresholds.length ? request.budgetThresholds : state.config.defaultBudgetThresholds
+  );
+  return { assignment, created: true };
+}
+
+function nextExecutionNumber(state) {
+  const last = [...(state.deploymentExecutions || [])]
+    .map(e => Number(String(e.number || '').split('-').pop()))
+    .filter(Number.isFinite)
+    .sort((a, b) => b - a)[0] || 0;
+  return `RUN-${String(last + 1).padStart(5, '0')}`;
+}
+
+async function triggerDeploymentExecution(state, request, assignment, body) {
+  const execution = {
+    id: makeId('run'),
+    number: nextExecutionNumber(state),
+    requestId: request.id,
+    requestNumber: request.number,
+    assignmentId: assignment.id,
+    deploymentName: String(body.name || `deploy-${request.number}`).trim(),
+    deployedBy: String(body.deployedBy || 'pipeline@contoso.com').trim(),
+    mode: DEPLOYMENT_MODE,
+    externalRunId: null,
+    status: 'queued',
+    startedAt: nowIso(),
+    completedAt: null,
+    resultMessage: null,
+  };
+
+  if (DEPLOYMENT_MODE === 'webhook') {
+    if (!DEPLOYMENT_WEBHOOK_URL) {
+      execution.status = 'failed';
+      execution.resultMessage = 'APCL_DEPLOYMENT_WEBHOOK_URL not configured';
+      return execution;
+    }
+    const response = await fetch(DEPLOYMENT_WEBHOOK_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        request,
+        assignment,
+        executionId: execution.id,
+      }),
+    });
+    if (!response.ok) {
+      execution.status = 'failed';
+      execution.resultMessage = `webhook trigger failed (${response.status})`;
+      return execution;
+    }
+    const payload = await response.json().catch(() => ({}));
+    execution.externalRunId = payload.runId || payload.id || execution.id;
+    execution.status = 'queued';
+    execution.resultMessage = 'queued via webhook';
+    return execution;
+  }
+
+  execution.externalRunId = execution.id;
+  execution.status = 'succeeded';
+  execution.completedAt = nowIso();
+  execution.resultMessage = 'completed via local adapter';
+  return execution;
+}
+
+function finalizeDeploymentSuccess(state, request, execution, validation) {
+  const deployment = {
+    id: makeId('dep'),
+    name: execution.deploymentName,
+    deployedBy: execution.deployedBy,
+    status: 'succeeded',
+    at: nowIso(),
+    executionId: execution.id,
+    externalRunId: execution.externalRunId,
+  };
+  request.deployments.push(deployment);
+  request.state = 'deployed';
+  request.updatedAt = nowIso();
+  validation.entitlement.consumedAt = nowIso();
+
+  const budget = findOrCreateBudget(state, request.costCenter);
+  budget.spent = Number(budget.spent || 0) + Number(request.estimatedMonthlyCost || 0);
+  budget.forecast = Math.max(Number(budget.forecast || 0), budget.spent * 1.15);
+}
+
+function calculateBudgetAlertKey(costCenter, threshold, period) {
+  return `${costCenter}:${threshold}:${period}`;
+}
+
+function evaluateBudgetAlerts(state, source = 'runtime') {
+  const period = new Date().toISOString().slice(0, 7);
+  for (const budget of state.budgets || []) {
+    const cap = Number(budget.monthlyLimit || 0);
+    if (cap <= 0) continue;
+    const spent = Number(budget.spent || 0);
+    const pct = (spent / cap) * 100;
+    for (const threshold of budget.thresholds || [80, 100]) {
+      if (pct >= threshold) {
+        const key = calculateBudgetAlertKey(budget.costCenter, threshold, period);
+        const exists = (state.budgetAlerts || []).some(a => a.key === key);
+        if (!exists) {
+          state.budgetAlerts.unshift({
+            key,
+            costCenter: budget.costCenter,
+            threshold,
+            period,
+            spent,
+            cap,
+            percent: Math.round(pct * 100) / 100,
+            source,
+            createdAt: nowIso(),
+          });
+        }
+      }
+    }
+  }
+}
+
+function recalculateBudgetsFromReconciliation(state) {
+  const totals = new Map();
+  for (const row of state.reconciliation.rows || []) {
+    if (!row.costCenter) continue;
+    const prev = totals.get(row.costCenter) || 0;
+    totals.set(row.costCenter, prev + Number(row.cost || 0));
+  }
+  for (const budget of state.budgets || []) {
+    const spent = totals.get(budget.costCenter);
+    if (spent !== undefined) {
+      budget.spent = Math.round(spent * 100) / 100;
+      budget.forecast = Math.round(budget.spent * 1.1 * 100) / 100;
+    }
+  }
+  evaluateBudgetAlerts(state, 'reconciliation');
+}
+
+function summarizeChargeback(state) {
+  const byCostCenter = {};
+  const byPo = {};
+  for (const row of state.reconciliation.rows || []) {
+    const cc = row.costCenter || 'UNMAPPED';
+    byCostCenter[cc] = (byCostCenter[cc] || 0) + Number(row.cost || 0);
+    const po = row.poId || 'UNMAPPED';
+    byPo[po] = (byPo[po] || 0) + Number(row.cost || 0);
+  }
+  return {
+    byCostCenter: Object.entries(byCostCenter).map(([costCenter, cost]) => ({ costCenter, cost: Math.round(cost * 100) / 100 })),
+    byPo: Object.entries(byPo).map(([poId, cost]) => ({ poId, cost: Math.round(cost * 100) / 100 })),
+  };
+}
+
 function makeId(prefix) {
   return `${prefix}_${crypto.randomBytes(6).toString('hex')}`;
 }
@@ -44,10 +266,18 @@ function seedState() {
   const baseBudget = 25000;
   return {
     metadata: {
-      version: '1.0.0',
+      version: '1.1.0',
       createdAt: nowIso(),
       policyPackVersion: 'apcl-baseline-initiative@1.0.0',
-      controlPlane: 'phase1.5',
+      controlPlane: 'phase2',
+    },
+    config: {
+      managerApproverEmail: 'manager@contoso.com',
+      procurementApproverEmail: 'procurement@contoso.com',
+      financeApproverEmail: 'finance@contoso.com',
+      defaultBudgetCap: 10000,
+      defaultBudgetThresholds: [80, 100],
+      defaultExceptionDurationHours: 24,
     },
     tenants: [
       {
@@ -113,23 +343,45 @@ function seedState() {
       },
     ],
     budgets: [
-      { costCenter: 'FIN001', monthlyLimit: baseBudget, spent: 480, forecast: 680, currency: 'AUD' },
-      { costCenter: 'ENG001', monthlyLimit: 50000, spent: 12400, forecast: 15800, currency: 'AUD' },
+      { costCenter: 'FIN001', monthlyLimit: baseBudget, spent: 480, forecast: 680, currency: 'AUD', thresholds: [80, 100] },
+      { costCenter: 'ENG001', monthlyLimit: 50000, spent: 12400, forecast: 15800, currency: 'AUD', thresholds: [80, 100] },
     ],
+    assignmentPolicies: [
+      {
+        costCenter: 'FIN001',
+        subscription: 'sub-prod-finance',
+        resourceGroupPrefix: 'rg-apcl-fin',
+        monthlyBudgetCap: 25000,
+      },
+      {
+        costCenter: 'ENG001',
+        subscription: 'sub-prod-platform',
+        resourceGroupPrefix: 'rg-apcl-eng',
+        monthlyBudgetCap: 50000,
+      },
+    ],
+    assignments: [],
+    deploymentExecutions: [],
+    budgetAlerts: [],
     reconciliation: {
       imports: [],
       rows: [],
       orphanSpend: [],
+      chargebackSnapshots: [],
     },
     controls: {
       bypassProtection: {
         deploymentRequiresEntitlement: true,
         entitlementSingleUse: true,
         entitlementExpiryMinutes: ENTITLEMENT_TTL_MINUTES,
+        deploymentMode: DEPLOYMENT_MODE,
       },
       policyPack: {
         assignmentMode: 'deny',
         requiredTags: [...policyPack.requiredTags],
+      },
+      rbacBaseline: {
+        blockedHumanRoles: ['Owner', 'Contributor', 'User Access Administrator'],
       },
       exceptionWorkflow: {
         enabled: true,
@@ -152,25 +404,56 @@ function loadState() {
   const raw = fs.readFileSync(DATA_FILE, 'utf8');
   const parsed = JSON.parse(raw);
   parsed.reconciliation = parsed.reconciliation || { imports: [], rows: [], orphanSpend: [] };
+  parsed.reconciliation.chargebackSnapshots = parsed.reconciliation.chargebackSnapshots || [];
+  parsed.config = parsed.config || {
+    managerApproverEmail: 'manager@contoso.com',
+    procurementApproverEmail: 'procurement@contoso.com',
+    financeApproverEmail: 'finance@contoso.com',
+    defaultBudgetCap: 10000,
+    defaultBudgetThresholds: [80, 100],
+    defaultExceptionDurationHours: 24,
+  };
+  parsed.config.defaultBudgetThresholds = Array.isArray(parsed.config.defaultBudgetThresholds) && parsed.config.defaultBudgetThresholds.length
+    ? parsed.config.defaultBudgetThresholds.map(n => Number(n)).filter(Number.isFinite)
+    : [80, 100];
   parsed.controls = parsed.controls || {
     bypassProtection: {
       deploymentRequiresEntitlement: true,
       entitlementSingleUse: true,
       entitlementExpiryMinutes: ENTITLEMENT_TTL_MINUTES,
+      deploymentMode: DEPLOYMENT_MODE,
     },
     policyPack: {
       assignmentMode: 'deny',
       requiredTags: [...policyPack.requiredTags],
+    },
+    rbacBaseline: {
+      blockedHumanRoles: ['Owner', 'Contributor', 'User Access Administrator'],
     },
     exceptionWorkflow: {
       enabled: true,
       maxDurationHours: 72,
     },
   };
+  parsed.assignmentPolicies = parsed.assignmentPolicies || [];
+  parsed.assignments = parsed.assignments || [];
+  parsed.deploymentExecutions = parsed.deploymentExecutions || [];
+  parsed.budgetAlerts = parsed.budgetAlerts || [];
   parsed.tenants = parsed.tenants || [];
   for (const request of parsed.requests || []) {
     request.entitlements = request.entitlements || [];
     request.exceptions = request.exceptions || [];
+    request.assignmentId = request.assignmentId || null;
+    request.managerApproverEmail = request.managerApproverEmail || parsed.config.managerApproverEmail;
+    request.procurementApproverEmail = request.procurementApproverEmail || parsed.config.procurementApproverEmail;
+    request.financeApproverEmail = request.financeApproverEmail || parsed.config.financeApproverEmail;
+    request.desiredBudgetCap = Number(request.desiredBudgetCap || parsed.config.defaultBudgetCap);
+    request.budgetThresholds = Array.isArray(request.budgetThresholds) && request.budgetThresholds.length
+      ? request.budgetThresholds.map(n => Number(n)).filter(Number.isFinite)
+      : [...parsed.config.defaultBudgetThresholds];
+  }
+  for (const budget of parsed.budgets || []) {
+    budget.thresholds = budget.thresholds || [80, 100];
   }
   parsed.audit = hydrateAuditChain(parsed.audit || []);
   return parsed;
@@ -269,11 +552,28 @@ function calculateSummary(state) {
       allowedVmSkus: policyPack.allowedVmSkus,
     },
     reconciliation: summarizeReconciliation(state),
+    budgetAlerts: (state.budgetAlerts || []).slice(0, 20),
   };
 }
 
 function validateRequest(input) {
-  const required = ['title', 'requester', 'tenant', 'subscription', 'resourceType', 'region', 'sku', 'costCenter', 'poId', 'owner', 'estimatedMonthlyCost', 'justification'];
+  const required = [
+    'title',
+    'requester',
+    'tenant',
+    'subscription',
+    'resourceType',
+    'region',
+    'sku',
+    'costCenter',
+    'poId',
+    'owner',
+    'managerApproverEmail',
+    'procurementApproverEmail',
+    'desiredBudgetCap',
+    'estimatedMonthlyCost',
+    'justification',
+  ];
   const missing = required.filter(key => {
     const value = input[key];
     return value === undefined || value === null || String(value).trim() === '';
@@ -372,6 +672,7 @@ function summarizeReconciliation(state) {
     totalCost,
     orphanSpend: state.reconciliation.orphanSpend || [],
     lastImport: (state.reconciliation.imports || [])[0] || null,
+    chargeback: summarizeChargeback(state),
   };
 }
 
@@ -389,6 +690,45 @@ function handleApi(req, res, pathname) {
     });
   }
 
+  if (req.method === 'GET' && pathname === '/api/config') {
+    return send(res, 200, { config: state.config });
+  }
+
+  if (req.method === 'PUT' && pathname === '/api/config') {
+    return readJson(req)
+      .then(body => {
+        const next = {
+          managerApproverEmail: String(body.managerApproverEmail || state.config.managerApproverEmail).trim(),
+          procurementApproverEmail: String(body.procurementApproverEmail || state.config.procurementApproverEmail).trim(),
+          financeApproverEmail: String(body.financeApproverEmail || state.config.financeApproverEmail).trim(),
+          defaultBudgetCap: Number(body.defaultBudgetCap ?? state.config.defaultBudgetCap),
+          defaultBudgetThresholds: Array.isArray(body.defaultBudgetThresholds) && body.defaultBudgetThresholds.length
+            ? body.defaultBudgetThresholds.map(n => Number(n)).filter(Number.isFinite)
+            : state.config.defaultBudgetThresholds,
+          defaultExceptionDurationHours: Number(body.defaultExceptionDurationHours ?? state.config.defaultExceptionDurationHours),
+        };
+        if (!next.defaultBudgetThresholds.length) {
+          return send(res, 400, { error: 'defaultBudgetThresholds must contain at least one numeric value' });
+        }
+        if (!Number.isFinite(next.defaultBudgetCap) || next.defaultBudgetCap <= 0) {
+          return send(res, 400, { error: 'defaultBudgetCap must be > 0' });
+        }
+        if (!Number.isFinite(next.defaultExceptionDurationHours) || next.defaultExceptionDurationHours <= 0) {
+          return send(res, 400, { error: 'defaultExceptionDurationHours must be > 0' });
+        }
+        state.config = next;
+        appendAuditEvent(state, {
+          at: nowIso(),
+          action: 'config-updated',
+          actor: String(body.updatedBy || 'platform@contoso.com').trim(),
+          subject: 'control-plane-config',
+        });
+        saveState(state);
+        send(res, 200, { config: state.config });
+      })
+      .catch(err => send(res, 400, { error: err.message }));
+  }
+
   if (req.method === 'GET' && pathname === '/api/summary') {
     return send(res, 200, calculateSummary(state));
   }
@@ -396,10 +736,25 @@ function handleApi(req, res, pathname) {
   if (req.method === 'GET' && pathname === '/api/control-plane/status') {
     return send(res, 200, {
       metadata: state.metadata,
+      config: state.config,
       controls: state.controls,
       tenants: state.tenants,
+      assignments: {
+        total: state.assignments.length,
+      },
+      deployments: {
+        totalExecutions: state.deploymentExecutions.length,
+      },
       reconciliation: summarizeReconciliation(state),
     });
+  }
+
+  if (req.method === 'GET' && pathname === '/api/assignments') {
+    return send(res, 200, { assignments: state.assignments });
+  }
+
+  if (req.method === 'GET' && pathname === '/api/deployments') {
+    return send(res, 200, { deployments: state.deploymentExecutions });
   }
 
   if (req.method === 'GET' && pathname === '/api/requests') {
@@ -423,6 +778,13 @@ function handleApi(req, res, pathname) {
           costCenter: String(body.costCenter).trim(),
           poId: String(body.poId).trim(),
           owner: String(body.owner).trim(),
+          managerApproverEmail: String(body.managerApproverEmail || state.config.managerApproverEmail).trim(),
+          procurementApproverEmail: String(body.procurementApproverEmail || state.config.procurementApproverEmail).trim(),
+          financeApproverEmail: String(body.financeApproverEmail || state.config.financeApproverEmail).trim(),
+          desiredBudgetCap: Number(body.desiredBudgetCap || state.config.defaultBudgetCap),
+          budgetThresholds: Array.isArray(body.budgetThresholds) && body.budgetThresholds.length
+            ? body.budgetThresholds.map(n => Number(n)).filter(Number.isFinite)
+            : [...state.config.defaultBudgetThresholds],
           estimatedMonthlyCost: Number(body.estimatedMonthlyCost),
           justification: String(body.justification).trim(),
           state: 'submitted',
@@ -495,22 +857,42 @@ function handleApi(req, res, pathname) {
         .then(body => {
           const decision = String(body.decision || '').toLowerCase();
           const comment = String(body.comment || '').trim();
+          const defaultApprover = decision === 'approved'
+            ? request.procurementApproverEmail || state.config.procurementApproverEmail
+            : request.managerApproverEmail || state.config.managerApproverEmail;
+          const approver = String(body.approver || defaultApprover || 'unknown').trim();
           if (!['approved', 'rejected'].includes(decision)) {
             return send(res, 400, { error: 'decision must be approved or rejected' });
           }
           request.approvals.push({
             step: request.approvals.length + 1,
-            approver: String(body.approver || 'unknown').trim(),
+            approver,
             decision,
             comment,
             at: nowIso(),
           });
           request.state = decision;
           request.updatedAt = nowIso();
+          if (decision === 'approved') {
+            const assigned = ensureAssignmentAndBudget(state, request, approver);
+            if (assigned.created) {
+              appendAuditEvent(state, {
+                at: nowIso(),
+                action: 'assignment-created',
+                actor: approver,
+                subject: `${request.number}:${assigned.assignment.number}`,
+                details: {
+                  subscription: assigned.assignment.subscription,
+                  resourceGroup: assigned.assignment.resourceGroup,
+                  budgetCap: assigned.assignment.budgetCap,
+                },
+              });
+            }
+          }
           appendAuditEvent(state, {
             at: nowIso(),
             action: `request-${decision}`,
-            actor: String(body.approver || 'unknown').trim(),
+            actor: approver,
             subject: request.number,
           });
           saveState(state);
@@ -526,17 +908,40 @@ function handleApi(req, res, pathname) {
           if (request.state !== 'approved' && !exceptionActive) {
             return send(res, 409, { error: 'request must be approved or have an active exception before deployment' });
           }
+          const assignmentResult = ensureAssignmentAndBudget(
+            state,
+            request,
+            String(body.deployedBy || 'pipeline@contoso.com').trim()
+          );
+          const assignment = assignmentResult.assignment;
           const entitlementToken = String(body.entitlementToken || '').trim();
           const validation = validateDeployEntitlement(request, entitlementToken);
           if (!validation.ok) {
             return send(res, 403, { error: `deployment denied: ${validation.reason}` });
           }
+          const execution = {
+            id: makeId('run'),
+            number: nextExecutionNumber(state),
+            requestId: request.id,
+            requestNumber: request.number,
+            assignmentId: assignment.id,
+            deploymentName: String(body.name || `deploy-${request.number}`).trim(),
+            deployedBy: String(body.deployedBy || 'pipeline@contoso.com').trim(),
+            mode: DEPLOYMENT_MODE,
+            externalRunId: DEPLOYMENT_MODE === 'local' ? null : makeId('ext'),
+            status: 'succeeded',
+            startedAt: nowIso(),
+            completedAt: nowIso(),
+            resultMessage: DEPLOYMENT_MODE === 'local' ? 'completed via local adapter' : 'webhook mode not wired in demo',
+          };
+          state.deploymentExecutions.unshift(execution);
           const deployment = {
             id: makeId('dep'),
-            name: String(body.name || `deploy-${request.number}`).trim(),
-            deployedBy: String(body.deployedBy || 'pipeline@contoso.com').trim(),
+            name: execution.deploymentName,
+            deployedBy: execution.deployedBy,
             status: 'succeeded',
             at: nowIso(),
+            executionId: execution.id,
           };
           request.deployments.push(deployment);
           request.state = 'deployed';
@@ -548,15 +953,20 @@ function handleApi(req, res, pathname) {
             budget.spent = Number(budget.spent || 0) + Number(request.estimatedMonthlyCost || 0);
             budget.forecast = Math.max(Number(budget.forecast || 0), budget.spent * 1.15);
           }
+          evaluateBudgetAlerts(state, 'deployment');
 
           appendAuditEvent(state, {
             at: nowIso(),
             action: 'deployed',
             actor: deployment.deployedBy,
             subject: request.number,
+            details: {
+              assignmentId: assignment.id,
+              executionId: execution.id,
+            },
           });
           saveState(state);
-          send(res, 200, { request, deployment });
+          send(res, 200, { request, deployment, assignment, execution });
         })
         .catch(err => send(res, 400, { error: err.message }));
     }
@@ -593,12 +1003,30 @@ function handleApi(req, res, pathname) {
         .catch(err => send(res, 400, { error: err.message }));
     }
 
+    if (req.method === 'POST' && action === 'assign') {
+      return readJson(req)
+        .then(body => {
+          const actor = String(body.actor || request.procurementApproverEmail || state.config.procurementApproverEmail).trim();
+          const assigned = ensureAssignmentAndBudget(state, request, actor);
+          request.updatedAt = nowIso();
+          appendAuditEvent(state, {
+            at: nowIso(),
+            action: assigned.created ? 'assignment-created' : 'assignment-reused',
+            actor,
+            subject: `${request.number}:${assigned.assignment.number}`,
+          });
+          saveState(state);
+          send(res, 200, { assignment: assigned.assignment, created: assigned.created, request });
+        })
+        .catch(err => send(res, 400, { error: err.message }));
+    }
+
     if (req.method === 'POST' && action === 'exception') {
       return readJson(req)
         .then(body => {
           const requestedBy = String(body.requestedBy || request.requester || 'unknown').trim();
           const reason = String(body.reason || '').trim();
-          const durationHours = Number(body.durationHours || 24);
+          const durationHours = Number(body.durationHours || state.config.defaultExceptionDurationHours || 24);
           if (!reason) {
             return send(res, 400, { error: 'exception reason is required' });
           }
@@ -736,6 +1164,12 @@ function handleApi(req, res, pathname) {
           },
           ...(state.reconciliation.imports || []),
         ].slice(0, 200);
+        recalculateBudgetsFromReconciliation(state);
+        state.reconciliation.chargebackSnapshots.unshift({
+          id: makeId('chg'),
+          at: nowIso(),
+          summary: summarizeChargeback(state),
+        });
         appendAuditEvent(state, {
           at: nowIso(),
           action: 'reconciliation-imported',
@@ -758,6 +1192,61 @@ function handleApi(req, res, pathname) {
 
   if (req.method === 'GET' && pathname === '/api/reconciliation/summary') {
     return send(res, 200, summarizeReconciliation(state));
+  }
+
+  if (req.method === 'POST' && pathname === '/api/reconciliation/run') {
+    recalculateBudgetsFromReconciliation(state);
+    state.reconciliation.chargebackSnapshots.unshift({
+      id: makeId('chg'),
+      at: nowIso(),
+      summary: summarizeChargeback(state),
+    });
+    appendAuditEvent(state, {
+      at: nowIso(),
+      action: 'reconciliation-run',
+      actor: 'system',
+      subject: 'manual-reconciliation-run',
+    });
+    saveState(state);
+    return send(res, 200, summarizeReconciliation(state));
+  }
+
+  if (req.method === 'GET' && pathname === '/api/chargeback/summary') {
+    return send(res, 200, summarizeChargeback(state));
+  }
+
+  if (req.method === 'POST' && pathname === '/api/rbac/drift-report') {
+    return readJson(req)
+      .then(body => {
+        const assignments = Array.isArray(body.assignments) ? body.assignments : [];
+        const blockedRoles = state.controls.rbacBaseline.blockedHumanRoles || ['Owner', 'Contributor', 'User Access Administrator'];
+        const findings = assignments
+          .filter(a => String(a.principalType || '').toLowerCase() === 'user' && blockedRoles.includes(String(a.roleDefinitionName || a.role || '')))
+          .map(a => ({
+            principalId: a.principalId || a.assigneeObjectId || 'unknown',
+            principalType: a.principalType,
+            role: a.roleDefinitionName || a.role,
+            scope: a.scope || 'unknown',
+            severity: 'high',
+            recommendation: 'Remove standing role and convert to eligible access with approvals.',
+          }));
+        const report = {
+          generatedAt: nowIso(),
+          assignmentCount: assignments.length,
+          blockedRoles,
+          findingCount: findings.length,
+          findings,
+        };
+        appendAuditEvent(state, {
+          at: nowIso(),
+          action: 'rbac-drift-report',
+          actor: String(body.generatedBy || 'security@contoso.com').trim(),
+          subject: `findings:${findings.length}`,
+        });
+        saveState(state);
+        send(res, 200, report);
+      })
+      .catch(err => send(res, 400, { error: err.message }));
   }
 
   return false;
