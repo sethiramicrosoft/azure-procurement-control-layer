@@ -14,6 +14,12 @@ It helps enterprises enforce this chain for Azure consumption:
 
 This repository includes a working local control-plane app, Azure governance templates, and operational scripts you can adapt to your internal environment.
 
+## Disclaimer
+
+This is a personal project by Sudhakar Ethirajulu.
+It is not an official Microsoft offering and is not endorsed, supported, or warranted by Microsoft.
+All trademarks and product names are the property of their respective owners.
+
 ## Why APCL exists
 
 Most procurement operating models are PO-first and pre-approved.
