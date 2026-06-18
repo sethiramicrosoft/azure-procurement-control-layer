@@ -49,6 +49,10 @@ function renderSummary() {
 }
 
 function requestCard(request) {
+  const latestException = (request.exceptions || [])[request.exceptions.length - 1];
+  const exceptionLine = latestException
+    ? `<div class="muted">Exception ${latestException.number}: ${latestException.status}${latestException.expiresAt ? ` (expires ${latestException.expiresAt})` : ''}</div>`
+    : '';
   return `
     <article class="request-card">
       <div class="request-top">
@@ -65,9 +69,12 @@ function requestCard(request) {
       </div>
       <p>${request.justification}</p>
       <div class="muted">Policy: ${request.policyResult || 'n/a'}</div>
+      ${exceptionLine}
       <div class="request-actions">
         <button data-action="approve" data-id="${request.id}">Approve</button>
         <button data-action="reject" data-id="${request.id}">Reject</button>
+        <button data-action="exception" data-id="${request.id}">Request Exception</button>
+        <button data-action="exception-approve" data-id="${request.id}">Approve Exception</button>
         <button data-action="deploy" data-id="${request.id}">Deploy</button>
       </div>
     </article>
@@ -119,34 +126,63 @@ async function onSubmit(event) {
 }
 
 async function onAction(event) {
-  const id = event.target.dataset.id;
-  const action = event.target.dataset.action;
-  if (action === 'approve') {
-    await api(`/api/requests/${id}/decision`, {
-      method: 'POST',
-      body: JSON.stringify({ decision: 'approved', approver: 'procurement@contoso.com', comment: 'Approved in APCL demo' }),
-    });
+  try {
+    const id = event.target.dataset.id;
+    const action = event.target.dataset.action;
+    if (action === 'approve') {
+      await api(`/api/requests/${id}/decision`, {
+        method: 'POST',
+        body: JSON.stringify({ decision: 'approved', approver: 'procurement@contoso.com', comment: 'Approved in APCL demo' }),
+      });
+    }
+    if (action === 'reject') {
+      await api(`/api/requests/${id}/decision`, {
+        method: 'POST',
+        body: JSON.stringify({ decision: 'rejected', approver: 'procurement@contoso.com', comment: 'Rejected in APCL demo' }),
+      });
+    }
+    if (action === 'deploy') {
+      const entitlement = await api(`/api/requests/${id}/entitlement`, {
+        method: 'POST',
+        body: JSON.stringify({ issuedBy: 'procurement@contoso.com' }),
+      });
+      await api(`/api/requests/${id}/deploy`, {
+        method: 'POST',
+        body: JSON.stringify({
+          deployedBy: 'pipeline@contoso.com',
+          entitlementToken: entitlement.entitlementToken,
+        }),
+      });
+    }
+    if (action === 'exception') {
+      await api(`/api/requests/${id}/exception`, {
+        method: 'POST',
+        body: JSON.stringify({
+          requestedBy: 'engineer@contoso.com',
+          reason: 'Urgent operational need with procurement review pending',
+          durationHours: 24,
+        }),
+      });
+    }
+    if (action === 'exception-approve') {
+      const request = state.requests.find(r => r.id === id);
+      const latestException = request && request.exceptions && request.exceptions[request.exceptions.length - 1];
+      if (!latestException || latestException.status !== 'requested') {
+        throw new Error('No requested exception available to approve');
+      }
+      await api(`/api/requests/${id}/exception-decision`, {
+        method: 'POST',
+        body: JSON.stringify({
+          exceptionId: latestException.id,
+          decision: 'approved',
+          approver: 'procurement@contoso.com',
+        }),
+      });
+    }
+    await load();
+  } catch (err) {
+    window.alert(err.message);
   }
-  if (action === 'reject') {
-    await api(`/api/requests/${id}/decision`, {
-      method: 'POST',
-      body: JSON.stringify({ decision: 'rejected', approver: 'procurement@contoso.com', comment: 'Rejected in APCL demo' }),
-    });
-  }
-  if (action === 'deploy') {
-    const entitlement = await api(`/api/requests/${id}/entitlement`, {
-      method: 'POST',
-      body: JSON.stringify({ issuedBy: 'procurement@contoso.com' }),
-    });
-    await api(`/api/requests/${id}/deploy`, {
-      method: 'POST',
-      body: JSON.stringify({
-        deployedBy: 'pipeline@contoso.com',
-        entitlementToken: entitlement.entitlementToken,
-      }),
-    });
-  }
-  await load();
 }
 
 document.getElementById('request-form').addEventListener('submit', onSubmit);

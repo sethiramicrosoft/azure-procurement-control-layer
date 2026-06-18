@@ -30,6 +30,7 @@ azure-procurement-control-layer/
   docs/
     architecture.md
     internal-microsoft-plan.md
+    operations.md
   infra/
     policies/
       policy-pack.bicep
@@ -42,6 +43,7 @@ azure-procurement-control-layer/
   scripts/
     bootstrap.ps1
     deploy-approved-vm.ps1
+    rbac-hardening-baseline.ps1
   server.js
   package.json
   assets/
@@ -77,6 +79,9 @@ azure-procurement-control-layer/
 - Approval and rejection actions.
 - Approval-to-deployment entitlement token flow (mint + consume + expiry).
 - Deploy API rejects calls without valid APCL-issued entitlement.
+- Exception lifecycle (request, approve/reject, expiry-bound override).
+- Tamper-evident audit chain for control events.
+- Reconciliation import and orphan spend detection.
 - Deployment gating based on request state.
 - Policy summary, budget view, and audit trail.
 - Mandatory tags (`CostCenter`, `PO_ID`, `Owner`, `RequestId`) are enforced.
@@ -96,6 +101,8 @@ Those are Phase 2 items after baseline control-plane validation.
 - Keep subscription Owner access minimal and tightly controlled.
 - Run policy exemptions through documented approval with expiry.
 - Use PIM for Azure resource roles for JIT activation of high privilege access.
+- Set `APCL_ENTITLEMENT_SECRET` in production; do not use default development value.
+- Run `./scripts/rbac-hardening-baseline.ps1` before pilot rollout.
 
 ## Contributing
 

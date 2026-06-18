@@ -40,9 +40,15 @@ This MVP enforces:
 - Allowed locations.
 - Allowed VM SKUs.
 
-## Phase 2 extensions
+## Implemented control-plane modules
 
-- Automated entitlement tokens from approvals.
-- Time-bound exception workflow with expiry.
-- Multi-tenant delegated governance onboarding.
-- ERP integration for PO validation.
+- Entitlement token issuance and single-use deployment verification.
+- Exception lifecycle with explicit approval and expiry window.
+- Tamper-evident audit hashing for control events.
+- Reconciliation import path with orphan spend detection.
+
+## Remaining external integrations
+
+- ERP integration for PO validation and commitment synchronization.
+- Tenant onboarding automation for large federated estates.
+- Security operations integrations (SIEM, incident automation).

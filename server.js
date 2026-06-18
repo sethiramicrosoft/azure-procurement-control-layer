@@ -4,6 +4,7 @@ const path = require('path');
 const url = require('url');
 const crypto = require('crypto');
 const { signToken, verifyToken } = require('./lib/entitlement');
+const { appendAuditEvent, hydrateAuditChain } = require('./lib/audit');
 
 const ROOT = __dirname;
 const DATA_DIR = path.join(ROOT, 'data');
@@ -23,6 +24,14 @@ function nowIso() {
   return new Date().toISOString();
 }
 
+function nextExceptionNumber(request) {
+  const last = [...(request.exceptions || [])]
+    .map(e => Number(String(e.number || '').split('-').pop()))
+    .filter(Number.isFinite)
+    .sort((a, b) => b - a)[0] || 0;
+  return `EX-${String(last + 1).padStart(4, '0')}`;
+}
+
 function makeId(prefix) {
   return `${prefix}_${crypto.randomBytes(6).toString('hex')}`;
 }
@@ -38,7 +47,16 @@ function seedState() {
       version: '1.0.0',
       createdAt: nowIso(),
       policyPackVersion: 'apcl-baseline-initiative@1.0.0',
+      controlPlane: 'phase1.5',
     },
+    tenants: [
+      {
+        id: 'tenant_contoso_prod',
+        name: 'contoso-prod',
+        subscriptions: ['sub-prod-finance', 'sub-prod-platform'],
+        onboardedAt: nowIso(),
+      },
+    ],
     requests: [
       {
         id: makeId('req'),
@@ -61,6 +79,7 @@ function seedState() {
           { step: 1, approver: 'manager@contoso.com', decision: 'approved', comment: 'OK for sandbox', at: nowIso() },
           { step: 2, approver: 'procurement@contoso.com', decision: 'approved', comment: 'PO aligned', at: nowIso() },
         ],
+        exceptions: [],
         entitlements: [],
         deployments: [
           { id: makeId('dep'), name: 'approved-vm-2026-0001', deployedBy: 'pipeline@contoso.com', status: 'succeeded', at: nowIso() },
@@ -86,6 +105,7 @@ function seedState() {
         state: 'blocked',
         policyResult: 'fail: missing CostCenter, PO_ID; region not allowed',
         approvals: [],
+        exceptions: [],
         entitlements: [],
         deployments: [],
         createdAt: nowIso(),
@@ -96,9 +116,27 @@ function seedState() {
       { costCenter: 'FIN001', monthlyLimit: baseBudget, spent: 480, forecast: 680, currency: 'AUD' },
       { costCenter: 'ENG001', monthlyLimit: 50000, spent: 12400, forecast: 15800, currency: 'AUD' },
     ],
-    audit: [
-      { at: nowIso(), action: 'seeded', actor: 'system', subject: 'APCL demo state initialized' },
-    ],
+    reconciliation: {
+      imports: [],
+      rows: [],
+      orphanSpend: [],
+    },
+    controls: {
+      bypassProtection: {
+        deploymentRequiresEntitlement: true,
+        entitlementSingleUse: true,
+        entitlementExpiryMinutes: ENTITLEMENT_TTL_MINUTES,
+      },
+      policyPack: {
+        assignmentMode: 'deny',
+        requiredTags: [...policyPack.requiredTags],
+      },
+      exceptionWorkflow: {
+        enabled: true,
+        maxDurationHours: 72,
+      },
+    },
+    audit: [],
   };
 }
 
@@ -106,12 +144,36 @@ function loadState() {
   ensureDataDir();
   if (!fs.existsSync(DATA_FILE)) {
     const seed = seedState();
+    appendAuditEvent(seed, { at: nowIso(), action: 'seeded', actor: 'system', subject: 'APCL demo state initialized' });
     fs.writeFileSync(DATA_FILE, JSON.stringify(seed, null, 2));
     return seed;
   }
 
   const raw = fs.readFileSync(DATA_FILE, 'utf8');
-  return JSON.parse(raw);
+  const parsed = JSON.parse(raw);
+  parsed.reconciliation = parsed.reconciliation || { imports: [], rows: [], orphanSpend: [] };
+  parsed.controls = parsed.controls || {
+    bypassProtection: {
+      deploymentRequiresEntitlement: true,
+      entitlementSingleUse: true,
+      entitlementExpiryMinutes: ENTITLEMENT_TTL_MINUTES,
+    },
+    policyPack: {
+      assignmentMode: 'deny',
+      requiredTags: [...policyPack.requiredTags],
+    },
+    exceptionWorkflow: {
+      enabled: true,
+      maxDurationHours: 72,
+    },
+  };
+  parsed.tenants = parsed.tenants || [];
+  for (const request of parsed.requests || []) {
+    request.entitlements = request.entitlements || [];
+    request.exceptions = request.exceptions || [];
+  }
+  parsed.audit = hydrateAuditChain(parsed.audit || []);
+  return parsed;
 }
 
 function saveState(state) {
@@ -206,6 +268,7 @@ function calculateSummary(state) {
       allowedLocations: policyPack.allowedLocations,
       allowedVmSkus: policyPack.allowedVmSkus,
     },
+    reconciliation: summarizeReconciliation(state),
   };
 }
 
@@ -291,6 +354,27 @@ function validateDeployEntitlement(request, token) {
   return { ok: true, payload, entitlement };
 }
 
+function hasActiveException(request) {
+  const now = Date.now();
+  return (request.exceptions || []).some(e => e.status === 'approved' && new Date(e.expiresAt).getTime() > now);
+}
+
+function summarizeReconciliation(state) {
+  const rows = state.reconciliation.rows || [];
+  const imported = rows.length;
+  const matched = rows.filter(r => r.matchStatus === 'matched').length;
+  const orphan = rows.filter(r => r.matchStatus === 'orphan').length;
+  const totalCost = rows.reduce((sum, r) => sum + Number(r.cost || 0), 0);
+  return {
+    importedRows: imported,
+    matchedRows: matched,
+    orphanRows: orphan,
+    totalCost,
+    orphanSpend: state.reconciliation.orphanSpend || [],
+    lastImport: (state.reconciliation.imports || [])[0] || null,
+  };
+}
+
 function handleApi(req, res, pathname) {
   const state = loadState();
 
@@ -307,6 +391,15 @@ function handleApi(req, res, pathname) {
 
   if (req.method === 'GET' && pathname === '/api/summary') {
     return send(res, 200, calculateSummary(state));
+  }
+
+  if (req.method === 'GET' && pathname === '/api/control-plane/status') {
+    return send(res, 200, {
+      metadata: state.metadata,
+      controls: state.controls,
+      tenants: state.tenants,
+      reconciliation: summarizeReconciliation(state),
+    });
   }
 
   if (req.method === 'GET' && pathname === '/api/requests') {
@@ -335,6 +428,7 @@ function handleApi(req, res, pathname) {
           state: 'submitted',
           policyResult: '',
           approvals: [],
+          exceptions: [],
           entitlements: [],
           deployments: [],
           createdAt: nowIso(),
@@ -356,7 +450,7 @@ function handleApi(req, res, pathname) {
         }
 
         state.requests.unshift(request);
-        state.audit.unshift({
+        appendAuditEvent(state, {
           at: nowIso(),
           action: 'request-created',
           actor: request.requester,
@@ -384,7 +478,12 @@ function handleApi(req, res, pathname) {
           request.policyResult = issues.length ? `fail: ${issues.join('; ')}` : 'pass';
           request.state = issues.length ? 'blocked' : 'submitted';
           request.updatedAt = nowIso();
-          state.audit.unshift({ at: nowIso(), action: 'request-updated', actor: body.actor || 'system', subject: request.number });
+          appendAuditEvent(state, {
+            at: nowIso(),
+            action: 'request-updated',
+            actor: body.actor || 'system',
+            subject: request.number,
+          });
           saveState(state);
           send(res, 200, { request });
         })
@@ -408,7 +507,7 @@ function handleApi(req, res, pathname) {
           });
           request.state = decision;
           request.updatedAt = nowIso();
-          state.audit.unshift({
+          appendAuditEvent(state, {
             at: nowIso(),
             action: `request-${decision}`,
             actor: String(body.approver || 'unknown').trim(),
@@ -423,8 +522,9 @@ function handleApi(req, res, pathname) {
     if (req.method === 'POST' && action === 'deploy') {
       return readJson(req)
         .then(body => {
-          if (request.state !== 'approved') {
-            return send(res, 409, { error: 'request must be approved before deployment' });
+          const exceptionActive = hasActiveException(request);
+          if (request.state !== 'approved' && !exceptionActive) {
+            return send(res, 409, { error: 'request must be approved or have an active exception before deployment' });
           }
           const entitlementToken = String(body.entitlementToken || '').trim();
           const validation = validateDeployEntitlement(request, entitlementToken);
@@ -449,7 +549,7 @@ function handleApi(req, res, pathname) {
             budget.forecast = Math.max(Number(budget.forecast || 0), budget.spent * 1.15);
           }
 
-          state.audit.unshift({
+          appendAuditEvent(state, {
             at: nowIso(),
             action: 'deployed',
             actor: deployment.deployedBy,
@@ -464,15 +564,21 @@ function handleApi(req, res, pathname) {
     if (req.method === 'POST' && action === 'entitlement') {
       return readJson(req)
         .then(body => {
-          if (request.state !== 'approved') {
-            return send(res, 409, { error: 'request must be approved before entitlement issuance' });
+          const exceptionActive = hasActiveException(request);
+          if (request.state !== 'approved' && !exceptionActive) {
+            return send(res, 409, { error: 'request must be approved or have an active exception before entitlement issuance' });
           }
           const issuedBy = String(body.issuedBy || 'procurement@contoso.com').trim();
           const issued = issueEntitlementForRequest(request, issuedBy);
           request.entitlements = request.entitlements || [];
           request.entitlements.push(issued.record);
           request.updatedAt = nowIso();
-          state.audit.unshift({ at: nowIso(), action: 'entitlement-issued', actor: issuedBy, subject: request.number });
+          appendAuditEvent(state, {
+            at: nowIso(),
+            action: 'entitlement-issued',
+            actor: issuedBy,
+            subject: request.number,
+          });
           saveState(state);
           send(res, 200, {
             entitlementToken: issued.token,
@@ -487,11 +593,171 @@ function handleApi(req, res, pathname) {
         .catch(err => send(res, 400, { error: err.message }));
     }
 
+    if (req.method === 'POST' && action === 'exception') {
+      return readJson(req)
+        .then(body => {
+          const requestedBy = String(body.requestedBy || request.requester || 'unknown').trim();
+          const reason = String(body.reason || '').trim();
+          const durationHours = Number(body.durationHours || 24);
+          if (!reason) {
+            return send(res, 400, { error: 'exception reason is required' });
+          }
+          if (!Number.isFinite(durationHours) || durationHours <= 0 || durationHours > state.controls.exceptionWorkflow.maxDurationHours) {
+            return send(res, 400, { error: `durationHours must be between 1 and ${state.controls.exceptionWorkflow.maxDurationHours}` });
+          }
+          request.exceptions = request.exceptions || [];
+          const exception = {
+            id: makeId('exc'),
+            number: nextExceptionNumber(request),
+            requestedBy,
+            reason,
+            durationHours,
+            status: 'requested',
+            requestedAt: nowIso(),
+            approvedBy: null,
+            approvedAt: null,
+            expiresAt: null,
+            rejectedBy: null,
+            rejectedAt: null,
+            rejectionReason: null,
+          };
+          request.exceptions.push(exception);
+          request.updatedAt = nowIso();
+          appendAuditEvent(state, {
+            at: nowIso(),
+            action: 'exception-requested',
+            actor: requestedBy,
+            subject: `${request.number}:${exception.number}`,
+            details: { reason, durationHours },
+          });
+          saveState(state);
+          send(res, 201, { exception, requestId: request.id, requestNumber: request.number });
+        })
+        .catch(err => send(res, 400, { error: err.message }));
+    }
+
+    if (req.method === 'POST' && action === 'exception-decision') {
+      return readJson(req)
+        .then(body => {
+          const exceptionId = String(body.exceptionId || '').trim();
+          const decision = String(body.decision || '').trim().toLowerCase();
+          const approver = String(body.approver || 'procurement@contoso.com').trim();
+          const reason = String(body.reason || '').trim();
+          if (!exceptionId) {
+            return send(res, 400, { error: 'exceptionId is required' });
+          }
+          if (!['approved', 'rejected'].includes(decision)) {
+            return send(res, 400, { error: 'decision must be approved or rejected' });
+          }
+          const exception = (request.exceptions || []).find(e => e.id === exceptionId || e.number === exceptionId);
+          if (!exception) {
+            return send(res, 404, { error: 'exception not found' });
+          }
+          if (exception.status !== 'requested') {
+            return send(res, 409, { error: 'exception is already decided' });
+          }
+          if (decision === 'approved') {
+            exception.status = 'approved';
+            exception.approvedBy = approver;
+            exception.approvedAt = nowIso();
+            exception.expiresAt = new Date(Date.now() + exception.durationHours * 3600 * 1000).toISOString();
+          } else {
+            exception.status = 'rejected';
+            exception.rejectedBy = approver;
+            exception.rejectedAt = nowIso();
+            exception.rejectionReason = reason || 'no reason provided';
+          }
+          request.updatedAt = nowIso();
+          appendAuditEvent(state, {
+            at: nowIso(),
+            action: `exception-${decision}`,
+            actor: approver,
+            subject: `${request.number}:${exception.number}`,
+            details: decision === 'approved' ? { expiresAt: exception.expiresAt } : { rejectionReason: exception.rejectionReason },
+          });
+          saveState(state);
+          send(res, 200, { exception, requestId: request.id, requestNumber: request.number });
+        })
+        .catch(err => send(res, 400, { error: err.message }));
+    }
+
     return send(res, 404, { error: 'Unknown request action' });
   }
 
   if (req.method === 'GET' && pathname === '/api/audit') {
     return send(res, 200, { audit: state.audit.slice(0, 100) });
+  }
+
+  if (req.method === 'POST' && pathname === '/api/reconciliation/import') {
+    return readJson(req)
+      .then(body => {
+        const rows = Array.isArray(body.rows) ? body.rows : [];
+        if (!rows.length) {
+          return send(res, 400, { error: 'rows array is required' });
+        }
+        const importId = makeId('imp');
+        const importedAt = nowIso();
+        const normalized = rows.map((row, idx) => {
+          const requestRef = String(row.requestNumber || '').trim();
+          const cost = Number(row.cost || 0);
+          const hasRequest = state.requests.some(r => r.number === requestRef);
+          const matchStatus = hasRequest ? 'matched' : 'orphan';
+          return {
+            id: `${importId}_${idx + 1}`,
+            importId,
+            importedAt,
+            requestNumber: requestRef || null,
+            costCenter: String(row.costCenter || '').trim() || null,
+            poId: String(row.poId || '').trim() || null,
+            cost,
+            currency: String(row.currency || 'AUD').trim(),
+            source: String(row.source || 'manual-import').trim(),
+            matchStatus,
+          };
+        });
+        state.reconciliation.rows = [...normalized, ...(state.reconciliation.rows || [])].slice(0, 5000);
+        state.reconciliation.orphanSpend = normalized
+          .filter(r => r.matchStatus === 'orphan')
+          .map(r => ({
+            importId: r.importId,
+            requestNumber: r.requestNumber,
+            costCenter: r.costCenter,
+            poId: r.poId,
+            cost: r.cost,
+            currency: r.currency,
+          }));
+        state.reconciliation.imports = [
+          {
+            id: importId,
+            importedAt,
+            rowCount: normalized.length,
+            matched: normalized.filter(r => r.matchStatus === 'matched').length,
+            orphan: normalized.filter(r => r.matchStatus === 'orphan').length,
+          },
+          ...(state.reconciliation.imports || []),
+        ].slice(0, 200);
+        appendAuditEvent(state, {
+          at: nowIso(),
+          action: 'reconciliation-imported',
+          actor: String(body.importedBy || 'finops@contoso.com').trim(),
+          subject: importId,
+          details: {
+            rows: normalized.length,
+            matched: normalized.filter(r => r.matchStatus === 'matched').length,
+            orphan: normalized.filter(r => r.matchStatus === 'orphan').length,
+          },
+        });
+        saveState(state);
+        send(res, 201, {
+          importId,
+          summary: summarizeReconciliation(state),
+        });
+      })
+      .catch(err => send(res, 400, { error: err.message }));
+  }
+
+  if (req.method === 'GET' && pathname === '/api/reconciliation/summary') {
+    return send(res, 200, summarizeReconciliation(state));
   }
 
   return false;
