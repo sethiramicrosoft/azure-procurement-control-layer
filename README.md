@@ -14,6 +14,12 @@ It helps enterprises enforce this chain for Azure consumption:
 
 This repository includes a working local control-plane app, Azure governance templates, and operational scripts you can adapt to your internal environment.
 
+## Architecture diagram
+
+![APCL architecture](assets/apcl-architecture.svg)
+
+Editable source: `assets/apcl-architecture.excalidraw`
+
 ## Disclaimer
 
 This is a personal project by Sudhakar Ethirajulu.
