@@ -1,113 +1,222 @@
 # Azure Procurement Control Layer (APCL)
 
-APCL is an Azure governance accelerator that makes procurement controls enforceable in a consumption model.
+APCL is a procurement-aware Azure governance control plane starter.
 
-It addresses the enterprise gap where cloud spend can be created technically before procurement approval workflows catch up.
+It helps enterprises enforce this chain for Azure consumption:
 
-## What this accelerator provides
+1. request
+2. approval
+3. entitlement
+4. deployment
+5. policy compliance
+6. cost reconciliation
+7. finance visibility
 
-1. **Control model** for approval-to-deployment entitlement.
-2. **Azure policy pack** to enforce mandatory procurement metadata and deployment boundaries.
-3. **Runnable demo app** with request, approval, deploy, and audit flows.
-4. **Sample IaC template** for controlled deployment.
-5. **Bootstrap scripts** to deploy baseline governance quickly.
-6. **Communication assets** to publish externally and socialize internally.
+This repository includes a working local control-plane app, Azure governance templates, and operational scripts you can adapt to your internal environment.
 
-## Core design principles
+## Why APCL exists
 
-- **No standing broad access** in governed scopes.
-- **Approval is technically binding**, not advisory.
-- **Pipeline identity is the deployment path** for standard provisioning.
-- **Policy deny > policy alert** for mandatory governance controls.
-- **Exceptions are time-bound, approved, and auditable**.
+Most procurement operating models are PO-first and pre-approved.
+Azure is consumption-first and engineer-triggered.
 
-## Repository layout
+That mismatch creates common enterprise risks:
 
-```text
-azure-procurement-control-layer/
-  README.md
-  .gitignore
-  docs/
-    architecture.md
-    internal-microsoft-plan.md
-    operations.md
-  infra/
-    policies/
-      policy-pack.bicep
-    templates/
-      approved-vm.bicep
-  public/
-    index.html
-    styles.css
-    app.js
-  scripts/
-    bootstrap.ps1
-    deploy-approved-vm.ps1
-    rbac-hardening-baseline.ps1
-  server.js
-  package.json
-  assets/
-    linkedin-post.md
-```
+- spend created before procurement approval
+- weak attribution (cost center / PO / owner)
+- delayed visibility (invoice-time surprises)
+- fragmented controls across subscriptions/tenants
+
+APCL addresses this by making deployment permission conditional on approved intent.
+
+## What APCL does today
+
+### Implemented in this repo
+
+- Request intake API + UI with procurement metadata.
+- Approval/rejection workflow.
+- Exception workflow (request, approve/reject, expiry).
+- Entitlement token issuance for approved/exception-approved requests.
+- Deployment API enforcement (valid APCL token required).
+- Single-use entitlement consumption.
+- Tamper-evident audit hash chain (`prevHash` + `hash`).
+- Reconciliation import endpoint with orphan spend detection.
+- Azure Policy baseline (required tags, allowed regions, allowed VM SKUs).
+- Sample approved VM Bicep template.
+- RBAC hardening baseline script.
+
+### External integrations not included in-repo
+
+- Live SAP/ERP APIs.
+- Live ServiceNow/ITSM APIs.
+- Entra PIM configuration automation.
+- SIEM ingestion pipelines.
+- Tenant-scale onboarding automation.
+
+Those are intentionally outside this repo and should be wired to your internal systems.
+
+## Reference flow
+
+1. Engineer creates request with business and procurement metadata.
+2. Manager/procurement decides approve/reject.
+3. If approved (or valid approved exception exists), APCL issues entitlement token.
+4. Deployment endpoint accepts only valid, unexpired, unused token.
+5. Azure Policy denies non-compliant resource creation.
+6. Cost rows are imported and matched to request lineage.
+7. Orphan spend is surfaced for FinOps/procurement follow-up.
 
 ## Prerequisites
 
-- Azure subscription with permission to deploy policy and role assignments.
-- Azure CLI (`az`) logged in.
-- PowerShell 7+.
-- Node.js 18+ for the local demo app.
+### 1) Local runtime (for APCL control-plane app)
+
+- Node.js 18+
+- PowerShell 7+
+- Optional Docker (for container run)
+
+### 2) Azure governance deployment
+
+- Azure subscription access for:
+  - policy definition/assignment deployment
+  - resource group creation
+  - role assignment inspection
+- Azure CLI (`az`) authenticated
+- Bicep support in Azure CLI (`az bicep`)
+
+### 3) Org readiness (for enterprise rollout)
+
+- Cost center master data
+- PO/commitment model
+- Approval authority matrix (manager/procurement/finance)
+- RBAC ownership model (platform/security/procurement)
 
 ## Quick start
 
-1. Create a resource group for governance artifacts:
-   ```powershell
-   ./scripts/bootstrap.ps1 -SubscriptionId <sub-id> -Location australiaeast -ResourceGroupName rg-apcl-governance
-   ```
-2. Deploy an approved workload template (example VM):
-   ```powershell
-   ./scripts/deploy-approved-vm.ps1 -SubscriptionId <sub-id> -ResourceGroupName rg-apcl-approved-workloads -Location australiaeast -VmName vm-apcl-demo
-   ```
-3. Run the local demo:
-   ```powershell
-   npm start
-   ```
-   Then open `http://localhost:3000`.
+### A. Run local APCL app
 
-## What this MVP demonstrates
+```powershell
+npm start
+```
 
-- Request intake with procurement metadata.
-- Approval and rejection actions.
-- Approval-to-deployment entitlement token flow (mint + consume + expiry).
-- Deploy API rejects calls without valid APCL-issued entitlement.
-- Exception lifecycle (request, approve/reject, expiry-bound override).
-- Tamper-evident audit chain for control events.
-- Reconciliation import and orphan spend detection.
-- Deployment gating based on request state.
-- Policy summary, budget view, and audit trail.
-- Mandatory tags (`CostCenter`, `PO_ID`, `Owner`, `RequestId`) are enforced.
-- Region and VM SKU boundaries are enforced by policy.
-- Workloads are intended to be deployed through controlled automation using approved metadata.
+Open:
 
-## Not included in this MVP
+```text
+http://localhost:3000
+```
 
-- SAP/ERP real-time PO integration.
-- Complete multi-tenant onboarding automation.
-- Production identity and workflow integrations.
+### B. Deploy Azure policy baseline
 
-Those are Phase 2 items after baseline control-plane validation.
+```powershell
+./scripts/bootstrap.ps1 -SubscriptionId <sub-id> -Location australiaeast -ResourceGroupName rg-apcl-governance
+```
 
-## Security and governance notes
+### C. Deploy approved workload template (example VM)
 
-- Keep subscription Owner access minimal and tightly controlled.
-- Run policy exemptions through documented approval with expiry.
-- Use PIM for Azure resource roles for JIT activation of high privilege access.
-- Set `APCL_ENTITLEMENT_SECRET` in production; do not use default development value.
-- Run `./scripts/rbac-hardening-baseline.ps1` before pilot rollout.
+```powershell
+./scripts/deploy-approved-vm.ps1 -SubscriptionId <sub-id> -ResourceGroupName rg-apcl-approved-workloads -Location australiaeast -VmName vm-apcl-demo
+```
+
+### D. Generate RBAC hardening plan
+
+```powershell
+./scripts/rbac-hardening-baseline.ps1 -SubscriptionId <sub-id>
+```
+
+## Internal system integration guide
+
+APCL is designed to connect to your internal systems through adapter APIs.
+
+### Procurement / ITSM integration (recommended)
+
+Use APCL as the control-plane API behind your existing front-door workflow.
+
+- Source systems: ServiceNow, SAP, Dynamics, custom procurement portal.
+- Integration pattern:
+  1. system creates APCL request
+  2. external approval decision posts to APCL decision endpoint
+  3. external orchestrator calls entitlement + deploy
+  4. reconciliation summaries are fed back to finance tooling
+
+### Identity and access integration
+
+- Keep broad Azure RBAC roles minimal.
+- Use PIM for eligible elevation.
+- Restrict deployment path to approved automation identities.
+- Set strong secret for entitlement signing (`APCL_ENTITLEMENT_SECRET`).
+
+### Finance / FinOps integration
+
+- Import cost rows via reconciliation endpoint.
+- Match by APCL request number and procurement metadata.
+- Route orphan spend to remediation queue.
+
+### Security / SOC integration
+
+- Forward audit events to SIEM.
+- Alert on:
+  - denied deployments
+  - repeated invalid entitlement attempts
+  - exception approvals near expiry
+  - orphan spend spikes
+
+## API surface (high-level)
+
+- `GET /api/health`
+- `GET /api/summary`
+- `GET /api/control-plane/status`
+- `GET|POST /api/requests`
+- `POST /api/requests/{id}/decision`
+- `POST /api/requests/{id}/exception`
+- `POST /api/requests/{id}/exception-decision`
+- `POST /api/requests/{id}/entitlement`
+- `POST /api/requests/{id}/deploy`
+- `POST /api/reconciliation/import`
+- `GET /api/reconciliation/summary`
+- `GET /api/audit`
+
+See `docs/operations.md` for payload examples and operations details.
+
+## Deployment options
+
+### Local process
+
+```powershell
+npm start
+```
+
+### Container
+
+```powershell
+docker build -t apcl:latest .
+docker run -p 3000:3000 -e APCL_ENTITLEMENT_SECRET="<strong-secret>" apcl:latest
+```
+
+### Enterprise deployment target patterns
+
+- App Service / Container Apps for control plane
+- Azure SQL/Cosmos (replace local JSON state)
+- Key Vault for signing secrets
+- CI/CD pipeline with environment isolation
+
+## Production hardening checklist
+
+- [ ] Replace file-based state with managed datastore.
+- [ ] Configure Key Vault secret retrieval.
+- [ ] Enable authentication and API authorization boundaries.
+- [ ] Integrate PIM and privileged access governance.
+- [ ] Wire SIEM and incident workflows.
+- [ ] Integrate ERP/ITSM connectors.
+- [ ] Define retention and audit export policy.
+- [ ] Add backup/restore and DR runbooks.
+
+## Current maturity statement
+
+This repo is a strong control-plane starter and pilot-ready accelerator.
+It is not a complete enterprise product until your internal identity, ITSM/ERP, and SOC integrations are wired.
 
 ## Contributing
 
 Contributions are welcome for:
 
-- Additional policy packs by regulatory profile.
-- Expanded workload templates.
-- Integration adapters for ITSM and ERP systems.
+- policy packs by regulatory profile
+- enterprise integration adapters
+- hardened persistence backends
+- multi-tenant onboarding automation
