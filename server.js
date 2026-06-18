@@ -3,12 +3,15 @@ const fs = require('fs');
 const path = require('path');
 const url = require('url');
 const crypto = require('crypto');
+const { signToken, verifyToken } = require('./lib/entitlement');
 
 const ROOT = __dirname;
 const DATA_DIR = path.join(ROOT, 'data');
 const DATA_FILE = path.join(DATA_DIR, 'state.json');
 const PUBLIC_DIR = path.join(ROOT, 'public');
 const PORT = process.env.PORT ? Number(process.env.PORT) : 3000;
+const ENTITLEMENT_SECRET = process.env.APCL_ENTITLEMENT_SECRET || 'apcl-dev-secret-change';
+const ENTITLEMENT_TTL_MINUTES = Number(process.env.APCL_ENTITLEMENT_TTL_MINUTES || 60);
 
 const policyPack = {
   allowedLocations: ['australiaeast', 'australiasoutheast'],
@@ -58,6 +61,7 @@ function seedState() {
           { step: 1, approver: 'manager@contoso.com', decision: 'approved', comment: 'OK for sandbox', at: nowIso() },
           { step: 2, approver: 'procurement@contoso.com', decision: 'approved', comment: 'PO aligned', at: nowIso() },
         ],
+        entitlements: [],
         deployments: [
           { id: makeId('dep'), name: 'approved-vm-2026-0001', deployedBy: 'pipeline@contoso.com', status: 'succeeded', at: nowIso() },
         ],
@@ -82,6 +86,7 @@ function seedState() {
         state: 'blocked',
         policyResult: 'fail: missing CostCenter, PO_ID; region not allowed',
         approvals: [],
+        entitlements: [],
         deployments: [],
         createdAt: nowIso(),
         updatedAt: nowIso(),
@@ -235,6 +240,57 @@ function nextRequestNumber(state) {
   return `APCL-2026-${String(last + 1).padStart(4, '0')}`;
 }
 
+function issueEntitlementForRequest(request, issuedBy) {
+  const issuedAt = Math.floor(Date.now() / 1000);
+  const expiresAt = issuedAt + ENTITLEMENT_TTL_MINUTES * 60;
+  const tokenId = makeId('ent');
+  const payload = {
+    jti: tokenId,
+    requestId: request.id,
+    requestNumber: request.number,
+    subscription: request.subscription,
+    region: request.region,
+    sku: request.sku,
+    costCenter: request.costCenter,
+    poId: request.poId,
+    iat: issuedAt,
+    exp: expiresAt,
+  };
+  const token = signToken(payload, ENTITLEMENT_SECRET);
+  return {
+    token,
+    record: {
+      id: tokenId,
+      issuedBy,
+      issuedAt: nowIso(),
+      expiresAt: new Date(expiresAt * 1000).toISOString(),
+      consumedAt: null,
+    },
+  };
+}
+
+function validateDeployEntitlement(request, token) {
+  const result = verifyToken(token, ENTITLEMENT_SECRET);
+  if (!result.valid) {
+    return { ok: false, reason: result.reason };
+  }
+  const payload = result.payload;
+  if (payload.requestId !== request.id || payload.requestNumber !== request.number) {
+    return { ok: false, reason: 'token request mismatch' };
+  }
+  const entitlement = (request.entitlements || []).find(e => e.id === payload.jti);
+  if (!entitlement) {
+    return { ok: false, reason: 'token not issued by APCL for this request' };
+  }
+  if (entitlement.consumedAt) {
+    return { ok: false, reason: 'token already used' };
+  }
+  if (entitlement.expiresAt && Date.now() > new Date(entitlement.expiresAt).getTime()) {
+    return { ok: false, reason: 'token expired' };
+  }
+  return { ok: true, payload, entitlement };
+}
+
 function handleApi(req, res, pathname) {
   const state = loadState();
 
@@ -279,6 +335,7 @@ function handleApi(req, res, pathname) {
           state: 'submitted',
           policyResult: '',
           approvals: [],
+          entitlements: [],
           deployments: [],
           createdAt: nowIso(),
           updatedAt: nowIso(),
@@ -369,6 +426,11 @@ function handleApi(req, res, pathname) {
           if (request.state !== 'approved') {
             return send(res, 409, { error: 'request must be approved before deployment' });
           }
+          const entitlementToken = String(body.entitlementToken || '').trim();
+          const validation = validateDeployEntitlement(request, entitlementToken);
+          if (!validation.ok) {
+            return send(res, 403, { error: `deployment denied: ${validation.reason}` });
+          }
           const deployment = {
             id: makeId('dep'),
             name: String(body.name || `deploy-${request.number}`).trim(),
@@ -379,6 +441,7 @@ function handleApi(req, res, pathname) {
           request.deployments.push(deployment);
           request.state = 'deployed';
           request.updatedAt = nowIso();
+          validation.entitlement.consumedAt = nowIso();
 
           const budget = state.budgets.find(b => b.costCenter === request.costCenter);
           if (budget) {
@@ -394,6 +457,32 @@ function handleApi(req, res, pathname) {
           });
           saveState(state);
           send(res, 200, { request, deployment });
+        })
+        .catch(err => send(res, 400, { error: err.message }));
+    }
+
+    if (req.method === 'POST' && action === 'entitlement') {
+      return readJson(req)
+        .then(body => {
+          if (request.state !== 'approved') {
+            return send(res, 409, { error: 'request must be approved before entitlement issuance' });
+          }
+          const issuedBy = String(body.issuedBy || 'procurement@contoso.com').trim();
+          const issued = issueEntitlementForRequest(request, issuedBy);
+          request.entitlements = request.entitlements || [];
+          request.entitlements.push(issued.record);
+          request.updatedAt = nowIso();
+          state.audit.unshift({ at: nowIso(), action: 'entitlement-issued', actor: issuedBy, subject: request.number });
+          saveState(state);
+          send(res, 200, {
+            entitlementToken: issued.token,
+            entitlement: issued.record,
+            request: {
+              id: request.id,
+              number: request.number,
+              state: request.state,
+            },
+          });
         })
         .catch(err => send(res, 400, { error: err.message }));
     }

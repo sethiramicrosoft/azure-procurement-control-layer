@@ -75,6 +75,8 @@ azure-procurement-control-layer/
 
 - Request intake with procurement metadata.
 - Approval and rejection actions.
+- Approval-to-deployment entitlement token flow (mint + consume + expiry).
+- Deploy API rejects calls without valid APCL-issued entitlement.
 - Deployment gating based on request state.
 - Policy summary, budget view, and audit trail.
 - Mandatory tags (`CostCenter`, `PO_ID`, `Owner`, `RequestId`) are enforced.

@@ -134,9 +134,16 @@ async function onAction(event) {
     });
   }
   if (action === 'deploy') {
+    const entitlement = await api(`/api/requests/${id}/entitlement`, {
+      method: 'POST',
+      body: JSON.stringify({ issuedBy: 'procurement@contoso.com' }),
+    });
     await api(`/api/requests/${id}/deploy`, {
       method: 'POST',
-      body: JSON.stringify({ deployedBy: 'pipeline@contoso.com' }),
+      body: JSON.stringify({
+        deployedBy: 'pipeline@contoso.com',
+        entitlementToken: entitlement.entitlementToken,
+      }),
     });
   }
   await load();
