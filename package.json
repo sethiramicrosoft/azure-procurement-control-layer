@@ -1,0 +1,14 @@
+{
+  "name": "azure-procurement-control-layer",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Procurement-aware Azure governance accelerator",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "demo": "node server.js"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

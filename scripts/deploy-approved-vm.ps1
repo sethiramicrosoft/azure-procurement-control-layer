@@ -31,6 +31,7 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+$repoRoot = Split-Path -Parent $PSScriptRoot
 
 $adminPassword = Read-Host -Prompt 'Enter VM admin password' -AsSecureString
 $adminPasswordPtr = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($adminPassword)
@@ -46,7 +47,7 @@ try {
   Write-Host "Deploying approved VM template..." -ForegroundColor Cyan
   az deployment group create `
     --resource-group $ResourceGroupName `
-    --template-file ./infra/templates/approved-vm.bicep `
+    --template-file "$repoRoot/infra/templates/approved-vm.bicep" `
     --parameters location=$Location vmName=$VmName adminUsername=$AdminUsername adminPassword=$adminPasswordPlain vmSku=$VmSku costCenter=$CostCenter poId=$PoId owner=$Owner requestId=$RequestId `
     --output table
 

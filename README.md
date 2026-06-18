@@ -8,9 +8,10 @@ It addresses the enterprise gap where cloud spend can be created technically bef
 
 1. **Control model** for approval-to-deployment entitlement.
 2. **Azure policy pack** to enforce mandatory procurement metadata and deployment boundaries.
-3. **Sample IaC template** for controlled deployment.
-4. **Bootstrap scripts** to deploy baseline governance quickly.
-5. **Communication assets** to publish externally and socialize internally.
+3. **Runnable demo app** with request, approval, deploy, and audit flows.
+4. **Sample IaC template** for controlled deployment.
+5. **Bootstrap scripts** to deploy baseline governance quickly.
+6. **Communication assets** to publish externally and socialize internally.
 
 ## Core design principles
 
@@ -34,9 +35,15 @@ azure-procurement-control-layer/
       policy-pack.bicep
     templates/
       approved-vm.bicep
+  public/
+    index.html
+    styles.css
+    app.js
   scripts/
     bootstrap.ps1
     deploy-approved-vm.ps1
+  server.js
+  package.json
   assets/
     linkedin-post.md
 ```
@@ -46,6 +53,7 @@ azure-procurement-control-layer/
 - Azure subscription with permission to deploy policy and role assignments.
 - Azure CLI (`az`) logged in.
 - PowerShell 7+.
+- Node.js 18+ for the local demo app.
 
 ## Quick start
 
@@ -57,26 +65,35 @@ azure-procurement-control-layer/
    ```powershell
    ./scripts/deploy-approved-vm.ps1 -SubscriptionId <sub-id> -ResourceGroupName rg-apcl-approved-workloads -Location australiaeast -VmName vm-apcl-demo
    ```
+3. Run the local demo:
+   ```powershell
+   npm start
+   ```
+   Then open `http://localhost:3000`.
 
 ## What this MVP demonstrates
 
+- Request intake with procurement metadata.
+- Approval and rejection actions.
+- Deployment gating based on request state.
+- Policy summary, budget view, and audit trail.
 - Mandatory tags (`CostCenter`, `PO_ID`, `Owner`, `RequestId`) are enforced.
 - Region and VM SKU boundaries are enforced by policy.
 - Workloads are intended to be deployed through controlled automation using approved metadata.
 
 ## Not included in this MVP
 
-- Full Power Platform/ServiceNow request portal implementation.
 - SAP/ERP real-time PO integration.
 - Complete multi-tenant onboarding automation.
+- Production identity and workflow integrations.
 
 Those are Phase 2 items after baseline control-plane validation.
 
 ## Security and governance notes
 
-- Use PIM for Azure resource roles for JIT activation of high privilege access.
 - Keep subscription Owner access minimal and tightly controlled.
 - Run policy exemptions through documented approval with expiry.
+- Use PIM for Azure resource roles for JIT activation of high privilege access.
 
 ## Contributing
 

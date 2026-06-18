@@ -10,6 +10,7 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+$repoRoot = Split-Path -Parent $PSScriptRoot
 
 Write-Host "Setting Azure subscription context..." -ForegroundColor Cyan
 az account set --subscription $SubscriptionId
@@ -21,7 +22,7 @@ Write-Host "Deploying APCL baseline policy pack..." -ForegroundColor Cyan
 az deployment sub create `
   --name apcl-policy-pack-$(Get-Date -Format 'yyyyMMddHHmmss') `
   --location $Location `
-  --template-file ./infra/policies/policy-pack.bicep `
+  --template-file "$repoRoot/infra/policies/policy-pack.bicep" `
   --parameters location=$Location `
   --output table
 
