@@ -44,6 +44,9 @@ APCL addresses this by making deployment permission conditional on approved inte
 - Azure Policy baseline (required tags, allowed regions, allowed VM SKUs).
 - Sample approved VM Bicep template.
 - RBAC hardening baseline script.
+- Assignment policy mapping (cost center -> subscription + resource group prefix + budget cap).
+- Deployment execution adapter (`local` or `webhook`) for external orchestrators.
+- RBAC drift reporting endpoint for high-privilege human role detection.
 
 ### External integrations not included in-repo
 
@@ -64,6 +67,60 @@ Those are intentionally outside this repo and should be wired to your internal s
 5. Azure Policy denies non-compliant resource creation.
 6. Cost rows are imported and matched to request lineage.
 7. Orphan spend is surfaced for FinOps/procurement follow-up.
+
+## Guardrail model
+
+### Policy envelope
+
+APCL policy envelope controls request admissibility and deployment boundaries:
+
+- Required procurement metadata (`CostCenter`, `PO_ID`, `Owner`, `RequestId`).
+- Allowed regions.
+- Allowed VM SKUs for VM requests.
+- Budget cap and threshold percentages by cost center.
+- Assignment policy that maps approved requests to governed subscription/resource-group targets.
+
+### Exception lane
+
+APCL includes a formal exception lane with lifecycle controls:
+
+1. Exception requested with reason and duration.
+2. Procurement decision (approve/reject).
+3. Approved exception gets explicit expiry.
+4. Exception decisions are auditable and tied to request lineage.
+
+### Auto-approval for standard patterns
+
+APCL currently supports deterministic policy evaluation plus explicit approval decisions.
+
+To enable full auto-approval, configure a standard-pattern rule set (in your adapter/orchestrator) that approves only when:
+
+- policy checks pass,
+- budget thresholds are within approved tolerance,
+- request matches pre-approved service envelope (resource type/region/SKU),
+- no exception is required.
+
+This keeps approvals fast for routine requests while preserving strict controls for non-standard demand.
+
+## Subscription vending + ALZ integration
+
+### What is implemented now
+
+- Assignment policy maps approved demand to target subscription and governed resource-group naming.
+- Deployment adapter supports webhook mode to trigger your existing vending/orchestration system.
+- Policy and tagging guardrails are deployable via included Bicep/scripts.
+
+### What you wire in enterprise rollout
+
+- Subscription vending platform integration (e.g., CAF-based vending pipeline).
+- ALZ management-group hierarchy, policy initiatives, and RBAC baselines as the enforcement backbone.
+- APCL request/approval outputs passed into vending pipeline inputs (subscription, environment, archetype, budget guardrails).
+
+### Recommended integration pattern
+
+1. APCL approves intent and returns entitlement + assignment context.
+2. Vending/orchestrator consumes APCL payload and executes ALZ-aligned deployment.
+3. APCL stores execution status and reconciliation lineage for procurement/finance evidence.
 
 ## Prerequisites
 
@@ -222,6 +279,47 @@ docker run -p 3000:3000 -e APCL_ENTITLEMENT_SECRET="<strong-secret>" apcl:latest
 
 This repo is a strong control-plane starter and pilot-ready accelerator.
 It is not a complete enterprise product until your internal identity, ITSM/ERP, and SOC integrations are wired.
+
+## FAQ (Procurement + IT + Platform)
+
+### Procurement-facing
+
+**Q: How does APCL help procurement in a consumption model where spend is post-usage?**  
+A: APCL shifts control left by requiring approved intent (cost center, PO reference, owner, approvers) before deployment can proceed, then preserves lineage into reconciliation and chargeback.
+
+**Q: Can APCL enforce PO-first behavior if Azure is self-service?**  
+A: Yes. Requests without required procurement metadata fail policy evaluation, and deployments require APCL entitlement tied to approved procurement context.
+
+**Q: How does APCL reduce invoice-time surprises?**  
+A: It combines pre-deployment controls (policy + approvals + budget limits) with post-deployment reconciliation and orphan spend detection.
+
+**Q: Does APCL replace ERP/ITSM systems?**  
+A: No. It acts as the cloud control plane between engineering activity and procurement/finance systems, using adapters for your ERP/ITSM estate.
+
+### IT / platform objection handling
+
+**Q: “This will slow engineering down.”**  
+A: APCL separates standard and non-standard demand. Standard patterns can be auto-approved through deterministic rules; non-standard requests use explicit approval/exception lanes.
+
+**Q: “This adds admin overhead for cloud teams.”**  
+A: APCL centralizes controls as reusable policy envelopes and assignment policies, reducing ad-hoc ticket handling and manual governance checks.
+
+**Q: “We already have Azure Policy and RBAC — why APCL?”**  
+A: Azure Policy/RBAC enforce technical boundaries, but APCL binds those boundaries to procurement intent, entitlement issuance, audit evidence, and reconciliation lineage.
+
+**Q: “Will this conflict with ALZ and subscription vending?”**  
+A: No. APCL is designed to front-end ALZ/vending workflows by supplying approved intent and guardrail context that downstream vending pipelines enforce at scale.
+
+### Adoption and value
+
+**Q: Who is the primary buyer/sponsor?**  
+A: Procurement and FinOps co-sponsors, with platform/security as implementation owners.
+
+**Q: What is the business case in one line?**  
+A: APCL reduces uncontrolled cloud spend risk by turning procurement policy into enforceable pre-deployment controls with end-to-end financial traceability.
+
+**Q: What is the fastest path to prove value?**  
+A: Pilot one cost center and one subscription family, enable required metadata + entitlement gating + reconciliation import, then measure orphan spend and approval cycle improvements.
 
 ## Contributing
 
