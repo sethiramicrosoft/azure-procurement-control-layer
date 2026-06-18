@@ -70,3 +70,43 @@ The following remain external by design:
 2. Entra PIM configuration for Azure resource roles.
 3. Tenant-scale policy assignment automation.
 4. SIEM integration and incident workflows.
+
+## Direct Azure deployment (Azure Container Apps)
+
+### Provision platform
+
+```powershell
+./scripts/deploy-platform.ps1 -SubscriptionId <sub-id> -ResourceGroupName rg-apcl-platform-prod -Location australiaeast -ContainerAppName aca-apcl-prod -ContainerAppEnvironmentName cae-apcl-prod -LogAnalyticsWorkspaceName law-apcl-prod -ContainerRegistryName <globally-unique-acr-name> -KeyVaultName <globally-unique-kv-name>
+```
+
+Use ARM output instead of Bicep:
+
+```powershell
+./scripts/deploy-platform.ps1 -SubscriptionId <sub-id> -ResourceGroupName rg-apcl-platform-prod -Location australiaeast -ContainerAppName aca-apcl-prod -ContainerAppEnvironmentName cae-apcl-prod -LogAnalyticsWorkspaceName law-apcl-prod -ContainerRegistryName <globally-unique-acr-name> -KeyVaultName <globally-unique-kv-name> -TemplateType ARM
+```
+
+Regenerate ARM output from Bicep whenever infrastructure changes:
+
+```powershell
+./scripts/build-arm-from-bicep.ps1
+```
+
+### Deploy application image
+
+```powershell
+./scripts/deploy-app-to-aca.ps1 -SubscriptionId <sub-id> -ResourceGroupName rg-apcl-platform-prod -ContainerAppName aca-apcl-prod -ContainerRegistryName <globally-unique-acr-name>
+```
+
+### Post-deploy validation
+
+1. Open `https://<apcl-fqdn>/api/health`.
+2. Open APCL UI root URL and create a request.
+3. Confirm entitlement issuance and deploy flow works.
+4. Run reconciliation import and verify summary endpoint.
+
+### Enterprise customization reminders
+
+- move `APCL_DEPLOYMENT_MODE` to `webhook` for production orchestration integration
+- align ingress exposure with security policy
+- configure monitoring, alerting, and log retention
+- move from file-based state to managed datastore for production scale

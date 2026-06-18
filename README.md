@@ -44,6 +44,58 @@ docker build -t apcl:latest .
 docker run -p 3000:3000 -e APCL_ENTITLEMENT_SECRET="<strong-secret>" apcl:latest
 ```
 
+## Deploy directly to Azure (no local deployment required)
+
+This path provisions APCL runtime infrastructure in Azure and deploys the application container.
+
+### Prerequisites
+
+- Azure CLI logged in (`az login`)
+- permissions to create resource groups and deploy resources in target subscription
+- Bicep support in Azure CLI (`az bicep version`) for Bicep deployments
+- or use the generated ARM template (`infra/platform/main.json`)
+
+### 1. Provision APCL platform in Azure
+
+Using Bicep (default):
+
+```powershell
+./scripts/deploy-platform.ps1 -SubscriptionId <sub-id> -ResourceGroupName rg-apcl-platform-prod -Location australiaeast -ContainerAppName aca-apcl-prod -ContainerAppEnvironmentName cae-apcl-prod -LogAnalyticsWorkspaceName law-apcl-prod -ContainerRegistryName <globally-unique-acr-name> -KeyVaultName <globally-unique-kv-name>
+```
+
+Using ARM template output:
+
+```powershell
+./scripts/deploy-platform.ps1 -SubscriptionId <sub-id> -ResourceGroupName rg-apcl-platform-prod -Location australiaeast -ContainerAppName aca-apcl-prod -ContainerAppEnvironmentName cae-apcl-prod -LogAnalyticsWorkspaceName law-apcl-prod -ContainerRegistryName <globally-unique-acr-name> -KeyVaultName <globally-unique-kv-name> -TemplateType ARM
+```
+
+If you update `infra/platform/main.bicep`, regenerate ARM output:
+
+```powershell
+./scripts/build-arm-from-bicep.ps1
+```
+
+### 2. Build and deploy APCL app container
+
+```powershell
+./scripts/deploy-app-to-aca.ps1 -SubscriptionId <sub-id> -ResourceGroupName rg-apcl-platform-prod -ContainerAppName aca-apcl-prod -ContainerRegistryName <globally-unique-acr-name>
+```
+
+### 3. Validate
+
+Use the URL printed by the deployment script and open:
+
+- `https://<apcl-fqdn>/`
+- `https://<apcl-fqdn>/api/health`
+
+### Customer customization
+
+- ingress restrictions (public/internal)
+- APCL deployment mode (`local` vs `webhook`)
+- APCL webhook endpoint for vending/orchestration integration
+- scaling and resource sizing
+- security boundaries (networking, RBAC, Key Vault policies)
+
 ## Why APCL exists
 
 Most procurement operating models are PO-first and pre-approved.
@@ -211,7 +263,7 @@ See `docs/enterprise-deployment-pattern.md` for a copy-ready runbook template.
   - resource group creation
   - role assignment inspection
 - Azure CLI (`az`) authenticated
-- Bicep support in Azure CLI (`az bicep`)
+- Bicep support in Azure CLI (`az bicep`) or generated ARM templates
 
 ### 3) Org readiness (for enterprise rollout)
 
@@ -337,6 +389,10 @@ docker run -p 3000:3000 -e APCL_ENTITLEMENT_SECRET="<strong-secret>" apcl:latest
 - [ ] Integrate ERP/ITSM connectors.
 - [ ] Define retention and audit export policy.
 - [ ] Add backup/restore and DR runbooks.
+- [ ] Deploy APCL runtime on Azure hosting (ACA/App Service) instead of local process for production.
+- [ ] Set APCL entitlement secret only from Key Vault and rotate it on schedule.
+- [ ] Restrict ingress and API exposure based on enterprise network/security policy.
+- [ ] Set deployment mode to webhook and integrate with vending/orchestration pipeline.
 
 ## Current maturity statement
 
