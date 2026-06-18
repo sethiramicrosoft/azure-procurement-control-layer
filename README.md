@@ -20,6 +20,30 @@ This is a personal project by Sudhakar Ethirajulu.
 It is not an official Microsoft offering and is not endorsed, supported, or warranted by Microsoft.
 All trademarks and product names are the property of their respective owners.
 
+## Start here (clone -> run in minutes)
+
+```powershell
+git clone https://github.com/sethiramicrosoft/azure-procurement-control-layer.git
+cd azure-procurement-control-layer
+npm install
+npm start
+```
+
+Open `http://localhost:3000`.
+
+Then set control-plane defaults in the **Control plane inputs** form:
+- manager/procurement/finance approver emails
+- default budget cap
+- budget thresholds
+- default exception duration
+
+### Optional: run in Docker
+
+```powershell
+docker build -t apcl:latest .
+docker run -p 3000:3000 -e APCL_ENTITLEMENT_SECRET="<strong-secret>" apcl:latest
+```
+
 ## Why APCL exists
 
 Most procurement operating models are PO-first and pre-approved.
@@ -128,6 +152,50 @@ This keeps approvals fast for routine requests while preserving strict controls 
 2. Vending/orchestrator consumes APCL payload and executes ALZ-aligned deployment.
 3. APCL stores execution status and reconciliation lineage for procurement/finance evidence.
 
+## Enterprise scale enablement
+
+For large estates, do not run one-off commands per subscription as the steady-state model.
+
+Use this pattern:
+
+1. Central APCL control plane for requests, approvals, exception handling, entitlement, and reconciliation.
+2. Management-group-driven baseline rollout (bootstrap helper script in `scripts/bootstrap-at-management-group.ps1`).
+3. Subscription vending integration for Day-0 onboarding with APCL context.
+4. CI/CD-based fleet rollout and validation for policy and RBAC guardrails.
+5. Scheduled reconciliation and RBAC drift reporting at fleet level.
+
+See `docs/scale-rollout.md` for rollout phases and customer customization points.
+
+## Reusable enterprise deployment pattern
+
+Use this pattern as a direct starting point and adapt only the marked customization points.
+
+### Pattern overview
+
+1. **Control plane**: one APCL service per environment (dev/test/prod).
+2. **Guardrails**: policy baseline rolled out at management-group scope.
+3. **Vending**: APCL request/approval output flows into your subscription/workload vending orchestrator.
+4. **Operations**: scheduled reconciliation and RBAC drift reporting.
+
+### Standard implementation steps
+
+1. Deploy APCL service runtime (App Service/Container Apps/VM) with strong entitlement secret.
+2. Roll out policy baseline across management-group subscription fleet.
+3. Configure APCL assignment policies (cost center -> subscription archetype + RG prefix + budget cap).
+4. Wire deployment webhook mode to your vending/orchestration pipeline.
+5. Schedule reconciliation imports and RBAC drift checks.
+
+### Customer customization points
+
+- management-group hierarchy and exemption model
+- vending pipeline/toolchain (CAF accelerator, internal platform, Terraform/Bicep)
+- approval matrix and auto-approval thresholds
+- policy envelope (regions, SKUs, tags, exceptions)
+- reconciliation source and chargeback model
+- SIEM/PIM/security operations integrations
+
+See `docs/enterprise-deployment-pattern.md` for a copy-ready runbook template.
+
 ## Prerequisites
 
 ### 1) Local runtime (for APCL control-plane app)
@@ -154,43 +222,32 @@ This keeps approvals fast for routine requests while preserving strict controls 
 
 ## Quick start
 
-### A. Run local APCL app
+### A. Local pilot bootstrap
 
-```powershell
-npm start
-```
-
-Open:
-
-```text
-http://localhost:3000
-```
-
-Set control-plane defaults in the **Control plane inputs** form (approver emails, budget cap, threshold percentages, default exception duration) before creating requests.
-
-### B. Deploy Azure policy baseline
-
-```powershell
-./scripts/bootstrap.ps1 -SubscriptionId <sub-id> -Location australiaeast -ResourceGroupName rg-apcl-governance
-```
-
-### C. Deploy approved workload template (example VM)
-
-```powershell
-./scripts/deploy-approved-vm.ps1 -SubscriptionId <sub-id> -ResourceGroupName rg-apcl-approved-workloads -Location australiaeast -VmName vm-apcl-demo
-```
-
-### D. Generate RBAC hardening plan
-
-```powershell
-./scripts/rbac-hardening-baseline.ps1 -SubscriptionId <sub-id>
-```
-
-### E. Run reconciliation sample
+1. Run APCL locally (`npm start`).
+2. Create and decide a request in the UI.
+3. Issue entitlement and execute deploy flow.
+4. Run sample reconciliation:
 
 ```powershell
 ./scripts/invoke-reconciliation.ps1
 ```
+
+### B. Azure guardrails bootstrap (single subscription)
+
+```powershell
+./scripts/bootstrap.ps1 -SubscriptionId <sub-id> -Location australiaeast -ResourceGroupName rg-apcl-governance
+./scripts/deploy-approved-vm.ps1 -SubscriptionId <sub-id> -ResourceGroupName rg-apcl-approved-workloads -Location australiaeast -VmName vm-apcl-demo
+./scripts/rbac-hardening-baseline.ps1 -SubscriptionId <sub-id>
+```
+
+### C. Azure guardrails bootstrap (management group / fleet)
+
+```powershell
+./scripts/bootstrap-at-management-group.ps1 -ManagementGroupId <mg-id> -Location australiaeast -ResourceGroupName rg-apcl-governance
+```
+
+This applies the APCL baseline policy pack across all subscriptions under the management group.
 
 ## Internal system integration guide
 
