@@ -84,6 +84,7 @@ In production:
 
 - `APCL_AUTH_MODE=none` is blocked.
 - default entitlement secret is blocked.
+- webhook callback can be secured with `APCL_DEPLOYMENT_STATUS_TOKEN` (`x-apcl-status-token` header).
 
 ## State backend and audit export
 
@@ -97,8 +98,22 @@ Optional settings:
 - `APCL_SQLITE_DB_PATH=<path-to-apcl.db>`
 - `APCL_AUDIT_EXPORT_PATH=<path-to-audit-export.jsonl>`
 - `APCL_AUDIT_EXPORT_SECRET=<hmac-signing-secret>`
+- `APCL_DEPLOYMENT_WEBHOOK_HMAC_SECRET=<shared-secret>`
+- `APCL_DEPLOYMENT_STATUS_TOKEN=<shared-callback-token>`
 
 When SQLite backend is enabled, state writes use version-checked updates to reduce silent overwrite risk under concurrent requests.
+
+Webhook signing:
+
+1. APCL includes `x-apcl-timestamp` and `x-apcl-signature` when `APCL_DEPLOYMENT_WEBHOOK_HMAC_SECRET` is set.
+2. Signature formula: `HMAC_SHA256(secret, "<timestamp>.<raw-json-body>")`.
+3. Orchestrator should verify timestamp freshness and signature before accepting trigger.
+
+## Automated validation
+
+```powershell
+npm test
+```
 
 ## Direct Azure deployment (Azure Container Apps)
 

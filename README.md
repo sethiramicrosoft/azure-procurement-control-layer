@@ -99,6 +99,8 @@ Use the URL printed by the deployment script and open:
 - ingress restrictions (public/internal)
 - APCL deployment mode (`local` vs `webhook`)
 - APCL webhook endpoint for vending/orchestration integration
+- webhook request signing secret (`APCL_DEPLOYMENT_WEBHOOK_HMAC_SECRET`)
+- callback status token (`APCL_DEPLOYMENT_STATUS_TOKEN`)
 - scaling and resource sizing
 - security boundaries (networking, RBAC, Key Vault policies)
 - APCL auth mode (`none`, `easyauth`, `static`) and role mapping
@@ -136,6 +138,23 @@ For append-only external audit stream export:
 
 - `APCL_AUDIT_EXPORT_PATH=<path-to-audit-export.jsonl>`
 - `APCL_AUDIT_EXPORT_SECRET=<hmac-secret-for-export-signatures>` (optional but recommended)
+
+Webhook integration hardening:
+
+- `APCL_DEPLOYMENT_WEBHOOK_HMAC_SECRET=<shared-secret>`
+- APCL signs webhook payload with:
+  - `x-apcl-timestamp`
+  - `x-apcl-signature` (`HMAC_SHA256(secret, "<timestamp>.<raw-json-body>")`)
+- `APCL_DEPLOYMENT_STATUS_TOKEN=<shared-callback-token>`
+- Orchestrator callback can call `POST /api/deployments/{id}/status` using header `x-apcl-status-token`.
+
+## Validation tests
+
+Run automated smoke/regression checks:
+
+```powershell
+npm test
+```
 
 ## Why APCL exists
 

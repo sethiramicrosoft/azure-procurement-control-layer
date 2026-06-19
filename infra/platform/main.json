@@ -5,7 +5,7 @@
     "_generator": {
       "name": "bicep",
       "version": "0.44.1.10279",
-      "templateHash": "6585893068385074716"
+      "templateHash": "10589147782139008746"
     }
   },
   "parameters": {
@@ -234,6 +234,14 @@
                 {
                   "name": "APCL_AUDIT_EXPORT_PATH",
                   "value": "/tmp/audit-export.jsonl"
+                },
+                {
+                  "name": "APCL_DEPLOYMENT_WEBHOOK_HMAC_SECRET",
+                  "value": ""
+                },
+                {
+                  "name": "APCL_DEPLOYMENT_STATUS_TOKEN",
+                  "value": ""
                 }
               ]
             }

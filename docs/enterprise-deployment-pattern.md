@@ -23,6 +23,8 @@ Environment variables:
 - `APCL_ENTITLEMENT_TTL_MINUTES=60`
 - `APCL_DEPLOYMENT_MODE=webhook`
 - `APCL_DEPLOYMENT_WEBHOOK_URL=<your-vending-orchestration-endpoint>`
+- `APCL_DEPLOYMENT_WEBHOOK_HMAC_SECRET=<shared-signing-secret>`
+- `APCL_DEPLOYMENT_STATUS_TOKEN=<shared-callback-token>`
 - `APCL_AUTH_MODE=easyauth`
 - `APCL_STATE_BACKEND=sqlite`
 - `APCL_SQLITE_DB_PATH=/app/data/apcl.db`
@@ -58,7 +60,7 @@ APCL provides:
 Your orchestrator provides:
 - landing zone/subscription selection
 - workload provisioning implementation
-- deployment run status feedback (`POST /api/deployments/{executionId}/status`)
+- deployment run status feedback (`POST /api/deployments/{executionId}/status` with `x-apcl-status-token`)
 
 ## Step 5: Operate centrally
 

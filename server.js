@@ -17,6 +17,8 @@ const ENTITLEMENT_SECRET = process.env.APCL_ENTITLEMENT_SECRET || 'apcl-dev-secr
 const ENTITLEMENT_TTL_MINUTES = Number(process.env.APCL_ENTITLEMENT_TTL_MINUTES || 60);
 const DEPLOYMENT_MODE = String(process.env.APCL_DEPLOYMENT_MODE || 'local').toLowerCase(); // local | webhook
 const DEPLOYMENT_WEBHOOK_URL = process.env.APCL_DEPLOYMENT_WEBHOOK_URL || '';
+const DEPLOYMENT_WEBHOOK_HMAC_SECRET = process.env.APCL_DEPLOYMENT_WEBHOOK_HMAC_SECRET || '';
+const DEPLOYMENT_STATUS_TOKEN = process.env.APCL_DEPLOYMENT_STATUS_TOKEN || '';
 const STATE_BACKEND = String(process.env.APCL_STATE_BACKEND || 'file').toLowerCase(); // file | sqlite
 const AUDIT_EXPORT_PATH = process.env.APCL_AUDIT_EXPORT_PATH || '';
 const AUDIT_EXPORT_SECRET = process.env.APCL_AUDIT_EXPORT_SECRET || '';
@@ -127,6 +129,19 @@ function hasRequiredRole(identity, requiredRoles) {
   if (!requiredRoles || !requiredRoles.length) return true;
   const userRoles = Array.isArray(identity.roles) ? identity.roles : [];
   return requiredRoles.some(role => userRoles.includes(String(role).toLowerCase()));
+}
+
+function timingSafeEquals(a, b) {
+  const left = Buffer.from(String(a || ''));
+  const right = Buffer.from(String(b || ''));
+  if (left.length !== right.length) return false;
+  return crypto.timingSafeEqual(left, right);
+}
+
+function hasValidDeploymentStatusToken(req) {
+  if (!DEPLOYMENT_STATUS_TOKEN) return false;
+  const supplied = String(req.headers['x-apcl-status-token'] || '').trim();
+  return supplied && timingSafeEquals(supplied, DEPLOYMENT_STATUS_TOKEN);
 }
 
 const stateStore = createStateStore({
@@ -259,14 +274,26 @@ async function triggerDeploymentExecution(state, request, assignment, body) {
       execution.resultMessage = 'APCL_DEPLOYMENT_WEBHOOK_URL not configured';
       return execution;
     }
+    const webhookPayload = {
+      request,
+      assignment,
+      executionId: execution.id,
+    };
+    const headers = { 'Content-Type': 'application/json' };
+    if (DEPLOYMENT_WEBHOOK_HMAC_SECRET) {
+      const ts = String(Math.floor(Date.now() / 1000));
+      const serialized = JSON.stringify(webhookPayload);
+      const signature = crypto
+        .createHmac('sha256', DEPLOYMENT_WEBHOOK_HMAC_SECRET)
+        .update(`${ts}.${serialized}`)
+        .digest('hex');
+      headers['x-apcl-timestamp'] = ts;
+      headers['x-apcl-signature'] = signature;
+    }
     const response = await fetch(DEPLOYMENT_WEBHOOK_URL, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        request,
-        assignment,
-        executionId: execution.id,
-      }),
+      headers,
+      body: JSON.stringify(webhookPayload),
     });
     if (!response.ok) {
       execution.status = 'failed';
@@ -794,7 +821,17 @@ function summarizeReconciliation(state) {
 
 function handleApi(req, res, pathname) {
   const state = loadState();
-  const identity = getIdentity(req);
+  const deploymentStatusPath = /^\/api\/deployments\/[^/]+\/status$/.test(pathname);
+  const callbackTokenValid = deploymentStatusPath && hasValidDeploymentStatusToken(req);
+  const identity = callbackTokenValid
+    ? {
+      authenticated: true,
+      actor: 'orchestrator-callback',
+      roles: ['deployer', 'platform'],
+      authSource: 'status-token',
+      principalId: null,
+    }
+    : getIdentity(req);
 
   if (pathname !== '/api/health') {
     if (!identity.authenticated) {
@@ -814,7 +851,13 @@ function handleApi(req, res, pathname) {
   };
 
   if (req.method === 'GET' && pathname === '/api/health') {
-    return send(res, 200, { status: 'ok', time: nowIso(), authMode: AUTH_MODE, stateBackend: STATE_BACKEND });
+    return send(res, 200, {
+      status: 'ok',
+      time: nowIso(),
+      authMode: AUTH_MODE,
+      stateBackend: STATE_BACKEND,
+      deploymentMode: DEPLOYMENT_MODE,
+    });
   }
 
   if (req.method === 'GET' && pathname === '/api/policy') {
@@ -877,6 +920,9 @@ function handleApi(req, res, pathname) {
       runtime: {
         authMode: AUTH_MODE,
         stateBackend: STATE_BACKEND,
+        deploymentMode: DEPLOYMENT_MODE,
+        deploymentStatusTokenConfigured: Boolean(DEPLOYMENT_STATUS_TOKEN),
+        deploymentWebhookSignatureEnabled: Boolean(DEPLOYMENT_WEBHOOK_HMAC_SECRET),
       },
       tenants: state.tenants,
       assignments: {
