@@ -23,6 +23,7 @@ Environment variables:
 - `APCL_ENTITLEMENT_TTL_MINUTES=60`
 - `APCL_DEPLOYMENT_MODE=webhook`
 - `APCL_DEPLOYMENT_WEBHOOK_URL=<your-vending-orchestration-endpoint>`
+- `APCL_AUTH_MODE=easyauth`
 
 ## Step 2: Roll out governance baseline to subscription fleet
 
@@ -54,7 +55,7 @@ APCL provides:
 Your orchestrator provides:
 - landing zone/subscription selection
 - workload provisioning implementation
-- deployment run status feedback
+- deployment run status feedback (`POST /api/deployments/{executionId}/status`)
 
 ## Step 5: Operate centrally
 

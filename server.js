@@ -15,6 +15,14 @@ const ENTITLEMENT_SECRET = process.env.APCL_ENTITLEMENT_SECRET || 'apcl-dev-secr
 const ENTITLEMENT_TTL_MINUTES = Number(process.env.APCL_ENTITLEMENT_TTL_MINUTES || 60);
 const DEPLOYMENT_MODE = String(process.env.APCL_DEPLOYMENT_MODE || 'local').toLowerCase(); // local | webhook
 const DEPLOYMENT_WEBHOOK_URL = process.env.APCL_DEPLOYMENT_WEBHOOK_URL || '';
+const AUTH_MODE = String(process.env.APCL_AUTH_MODE || 'none').toLowerCase(); // none | easyauth | static
+const STATIC_TOKEN_MAP = (() => {
+  try {
+    return JSON.parse(process.env.APCL_STATIC_TOKENS_JSON || '{}');
+  } catch {
+    return {};
+  }
+})();
 
 const policyPack = {
   allowedLocations: ['australiaeast', 'australiasoutheast'],
@@ -24,6 +32,96 @@ const policyPack = {
 
 function nowIso() {
   return new Date().toISOString();
+}
+
+function parseMsClientPrincipal(headerValue) {
+  if (!headerValue) return null;
+  try {
+    const decoded = Buffer.from(String(headerValue), 'base64').toString('utf8');
+    const principal = JSON.parse(decoded);
+    const claims = Array.isArray(principal.claims) ? principal.claims : [];
+    const claimValue = (...types) => {
+      for (const type of types) {
+        const found = claims.find(c => c.typ === type);
+        if (found && found.val) return String(found.val);
+      }
+      return '';
+    };
+    const roles = claims
+      .filter(c =>
+        c.typ === 'roles'
+        || c.typ === 'role'
+        || c.typ === 'http://schemas.microsoft.com/ws/2008/06/identity/claims/role'
+      )
+      .map(c => String(c.val || '').toLowerCase())
+      .filter(Boolean);
+    const actor = claimValue(
+      'preferred_username',
+      'upn',
+      'http://schemas.xmlsoap.org/ws/2005/05/identity/claims/upn',
+      'name'
+    ) || 'unknown';
+    return {
+      authenticated: true,
+      actor,
+      roles,
+      authSource: 'easyauth',
+      principalId: claimValue('oid', 'http://schemas.microsoft.com/identity/claims/objectidentifier') || null,
+    };
+  } catch {
+    return null;
+  }
+}
+
+function getIdentity(req) {
+  if (AUTH_MODE === 'none') {
+    return {
+      authenticated: true,
+      actor: 'demo-user@local',
+      roles: ['requester', 'procurement', 'finance', 'deployer', 'platform', 'security'],
+      authSource: 'none',
+      principalId: null,
+    };
+  }
+
+  if (AUTH_MODE === 'easyauth') {
+    const principalHeader = req.headers['x-ms-client-principal'];
+    const principal = parseMsClientPrincipal(principalHeader);
+    if (!principal) {
+      return { authenticated: false, reason: 'missing or invalid EasyAuth principal header' };
+    }
+    return principal;
+  }
+
+  if (AUTH_MODE === 'static') {
+    const authHeader = String(req.headers.authorization || '');
+    const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7).trim() : '';
+    if (!token) {
+      return { authenticated: false, reason: 'missing bearer token' };
+    }
+    const mapped = STATIC_TOKEN_MAP[token];
+    if (!mapped || !mapped.actor) {
+      return { authenticated: false, reason: 'token not recognized' };
+    }
+    const roles = Array.isArray(mapped.roles)
+      ? mapped.roles.map(r => String(r).toLowerCase())
+      : [];
+    return {
+      authenticated: true,
+      actor: String(mapped.actor),
+      roles,
+      authSource: 'static',
+      principalId: mapped.principalId || null,
+    };
+  }
+
+  return { authenticated: false, reason: `unsupported auth mode: ${AUTH_MODE}` };
+}
+
+function hasRequiredRole(identity, requiredRoles) {
+  if (!requiredRoles || !requiredRoles.length) return true;
+  const userRoles = Array.isArray(identity.roles) ? identity.roles : [];
+  return requiredRoles.some(role => userRoles.includes(String(role).toLowerCase()));
 }
 
 function nextExceptionNumber(request) {
@@ -170,6 +268,9 @@ async function triggerDeploymentExecution(state, request, assignment, body) {
 }
 
 function finalizeDeploymentSuccess(state, request, execution, validation) {
+  if ((request.deployments || []).some(d => d.executionId === execution.id)) {
+    return;
+  }
   const deployment = {
     id: makeId('dep'),
     name: execution.deploymentName,
@@ -182,7 +283,9 @@ function finalizeDeploymentSuccess(state, request, execution, validation) {
   request.deployments.push(deployment);
   request.state = 'deployed';
   request.updatedAt = nowIso();
-  validation.entitlement.consumedAt = nowIso();
+  if (validation && validation.entitlement && !validation.entitlement.consumedAt) {
+    validation.entitlement.consumedAt = nowIso();
+  }
 
   const budget = findOrCreateBudget(state, request.costCenter);
   budget.spent = Number(budget.spent || 0) + Number(request.estimatedMonthlyCost || 0);
@@ -461,7 +564,9 @@ function loadState() {
 
 function saveState(state) {
   ensureDataDir();
-  fs.writeFileSync(DATA_FILE, JSON.stringify(state, null, 2));
+  const tempFile = `${DATA_FILE}.tmp`;
+  fs.writeFileSync(tempFile, JSON.stringify(state, null, 2));
+  fs.renameSync(tempFile, DATA_FILE);
 }
 
 function send(res, statusCode, body, headers = {}) {
@@ -559,7 +664,6 @@ function calculateSummary(state) {
 function validateRequest(input) {
   const required = [
     'title',
-    'requester',
     'tenant',
     'subscription',
     'resourceType',
@@ -678,9 +782,27 @@ function summarizeReconciliation(state) {
 
 function handleApi(req, res, pathname) {
   const state = loadState();
+  const identity = getIdentity(req);
+
+  if (pathname !== '/api/health') {
+    if (!identity.authenticated) {
+      return send(res, 401, { error: `authentication required: ${identity.reason || 'unauthorized'}` });
+    }
+  }
+
+  const requireRoles = roles => {
+    if (!hasRequiredRole(identity, roles)) {
+      send(res, 403, {
+        error: `forbidden: requires one of roles [${roles.join(', ')}]`,
+        actor: identity.actor,
+      });
+      return false;
+    }
+    return true;
+  };
 
   if (req.method === 'GET' && pathname === '/api/health') {
-    return send(res, 200, { status: 'ok', time: nowIso() });
+    return send(res, 200, { status: 'ok', time: nowIso(), authMode: AUTH_MODE });
   }
 
   if (req.method === 'GET' && pathname === '/api/policy') {
@@ -695,6 +817,7 @@ function handleApi(req, res, pathname) {
   }
 
   if (req.method === 'PUT' && pathname === '/api/config') {
+    if (!requireRoles(['platform'])) return;
     return readJson(req)
       .then(body => {
         const next = {
@@ -720,8 +843,9 @@ function handleApi(req, res, pathname) {
         appendAuditEvent(state, {
           at: nowIso(),
           action: 'config-updated',
-          actor: String(body.updatedBy || 'platform@contoso.com').trim(),
+          actor: identity.actor,
           subject: 'control-plane-config',
+          details: { authSource: identity.authSource || AUTH_MODE },
         });
         saveState(state);
         send(res, 200, { config: state.config });
@@ -757,11 +881,62 @@ function handleApi(req, res, pathname) {
     return send(res, 200, { deployments: state.deploymentExecutions });
   }
 
+  const deploymentStatusMatch = pathname.match(/^\/api\/deployments\/([^/]+)\/status$/);
+  if (deploymentStatusMatch && req.method === 'POST') {
+    if (!requireRoles(['deployer', 'platform'])) return;
+    const executionRef = decodeURIComponent(deploymentStatusMatch[1]);
+    return readJson(req)
+      .then(body => {
+        const nextStatus = String(body.status || '').toLowerCase();
+        if (!['queued', 'running', 'succeeded', 'failed'].includes(nextStatus)) {
+          return send(res, 400, { error: 'status must be queued, running, succeeded, or failed' });
+        }
+        const execution = (state.deploymentExecutions || []).find(e =>
+          e.id === executionRef || e.number === executionRef || e.externalRunId === executionRef
+        );
+        if (!execution) {
+          return send(res, 404, { error: 'deployment execution not found' });
+        }
+        execution.status = nextStatus;
+        execution.resultMessage = String(body.resultMessage || execution.resultMessage || '').trim() || null;
+        execution.externalRunId = String(body.externalRunId || execution.externalRunId || '').trim() || null;
+        if (nextStatus === 'succeeded' || nextStatus === 'failed') {
+          execution.completedAt = nowIso();
+        }
+
+        const request = state.requests.find(r => r.id === execution.requestId);
+        if (request && nextStatus === 'succeeded' && request.state !== 'deployed') {
+          const assignment = state.assignments.find(a => a.id === execution.assignmentId);
+          const entitlement = (request.entitlements || []).find(e => !e.consumedAt);
+          if (assignment && entitlement) {
+            finalizeDeploymentSuccess(state, request, execution, { entitlement });
+            evaluateBudgetAlerts(state, 'deployment');
+          }
+        }
+
+        appendAuditEvent(state, {
+          at: nowIso(),
+          action: `deployment-status-${nextStatus}`,
+          actor: identity.actor,
+          subject: execution.requestNumber,
+          details: {
+            executionId: execution.id,
+            externalRunId: execution.externalRunId,
+            resultMessage: execution.resultMessage,
+          },
+        });
+        saveState(state);
+        send(res, 200, { execution });
+      })
+      .catch(err => send(res, 400, { error: err.message }));
+  }
+
   if (req.method === 'GET' && pathname === '/api/requests') {
     return send(res, 200, { requests: state.requests.sort((a, b) => new Date(b.updatedAt) - new Date(a.updatedAt)) });
   }
 
   if (req.method === 'POST' && pathname === '/api/requests') {
+    if (!requireRoles(['requester', 'procurement', 'platform'])) return;
     return readJson(req)
       .then(body => {
         const missing = validateRequest(body);
@@ -769,7 +944,7 @@ function handleApi(req, res, pathname) {
           id: makeId('req'),
           number: nextRequestNumber(state),
           title: String(body.title).trim(),
-          requester: String(body.requester).trim(),
+          requester: identity.actor,
           tenant: String(body.tenant).trim(),
           subscription: String(body.subscription).trim(),
           resourceType: String(body.resourceType).trim(),
@@ -815,8 +990,9 @@ function handleApi(req, res, pathname) {
         appendAuditEvent(state, {
           at: nowIso(),
           action: 'request-created',
-          actor: request.requester,
+          actor: identity.actor,
           subject: request.number,
+          details: { authSource: identity.authSource || AUTH_MODE },
         });
         saveState(state);
         send(res, 201, { request });
@@ -834,6 +1010,7 @@ function handleApi(req, res, pathname) {
     }
 
     if (req.method === 'POST' && !action) {
+      if (!requireRoles(['requester', 'procurement', 'platform'])) return;
       return readJson(req)
         .then(body => {
           const issues = evaluateRequest({ ...request, ...body });
@@ -843,7 +1020,7 @@ function handleApi(req, res, pathname) {
           appendAuditEvent(state, {
             at: nowIso(),
             action: 'request-updated',
-            actor: body.actor || 'system',
+            actor: identity.actor,
             subject: request.number,
           });
           saveState(state);
@@ -853,14 +1030,12 @@ function handleApi(req, res, pathname) {
     }
 
     if (req.method === 'POST' && action === 'decision') {
+      if (!requireRoles(['procurement', 'platform'])) return;
       return readJson(req)
         .then(body => {
           const decision = String(body.decision || '').toLowerCase();
           const comment = String(body.comment || '').trim();
-          const defaultApprover = decision === 'approved'
-            ? request.procurementApproverEmail || state.config.procurementApproverEmail
-            : request.managerApproverEmail || state.config.managerApproverEmail;
-          const approver = String(body.approver || defaultApprover || 'unknown').trim();
+          const approver = identity.actor;
           if (!['approved', 'rejected'].includes(decision)) {
             return send(res, 400, { error: 'decision must be approved or rejected' });
           }
@@ -902,8 +1077,9 @@ function handleApi(req, res, pathname) {
     }
 
     if (req.method === 'POST' && action === 'deploy') {
+      if (!requireRoles(['deployer', 'platform'])) return;
       return readJson(req)
-        .then(body => {
+        .then(async body => {
           const exceptionActive = hasActiveException(request);
           if (request.state !== 'approved' && !exceptionActive) {
             return send(res, 409, { error: 'request must be approved or have an active exception before deployment' });
@@ -911,7 +1087,7 @@ function handleApi(req, res, pathname) {
           const assignmentResult = ensureAssignmentAndBudget(
             state,
             request,
-            String(body.deployedBy || 'pipeline@contoso.com').trim()
+            identity.actor
           );
           const assignment = assignmentResult.assignment;
           const entitlementToken = String(body.entitlementToken || '').trim();
@@ -919,66 +1095,77 @@ function handleApi(req, res, pathname) {
           if (!validation.ok) {
             return send(res, 403, { error: `deployment denied: ${validation.reason}` });
           }
-          const execution = {
-            id: makeId('run'),
-            number: nextExecutionNumber(state),
-            requestId: request.id,
-            requestNumber: request.number,
-            assignmentId: assignment.id,
-            deploymentName: String(body.name || `deploy-${request.number}`).trim(),
-            deployedBy: String(body.deployedBy || 'pipeline@contoso.com').trim(),
-            mode: DEPLOYMENT_MODE,
-            externalRunId: DEPLOYMENT_MODE === 'local' ? null : makeId('ext'),
-            status: 'succeeded',
-            startedAt: nowIso(),
-            completedAt: nowIso(),
-            resultMessage: DEPLOYMENT_MODE === 'local' ? 'completed via local adapter' : 'webhook mode not wired in demo',
-          };
+          const execution = await triggerDeploymentExecution(state, request, assignment, {
+            ...body,
+            deployedBy: identity.actor,
+          });
           state.deploymentExecutions.unshift(execution);
-          const deployment = {
-            id: makeId('dep'),
-            name: execution.deploymentName,
-            deployedBy: execution.deployedBy,
-            status: 'succeeded',
-            at: nowIso(),
-            executionId: execution.id,
-          };
-          request.deployments.push(deployment);
-          request.state = 'deployed';
-          request.updatedAt = nowIso();
-          validation.entitlement.consumedAt = nowIso();
 
-          const budget = state.budgets.find(b => b.costCenter === request.costCenter);
-          if (budget) {
-            budget.spent = Number(budget.spent || 0) + Number(request.estimatedMonthlyCost || 0);
-            budget.forecast = Math.max(Number(budget.forecast || 0), budget.spent * 1.15);
+          if (execution.status === 'succeeded') {
+            finalizeDeploymentSuccess(state, request, execution, validation);
+            evaluateBudgetAlerts(state, 'deployment');
+            appendAuditEvent(state, {
+              at: nowIso(),
+              action: 'deployed',
+              actor: identity.actor,
+              subject: request.number,
+              details: {
+                assignmentId: assignment.id,
+                executionId: execution.id,
+              },
+            });
+            saveState(state);
+            return send(res, 200, {
+              request,
+              deployment: request.deployments[request.deployments.length - 1],
+              assignment,
+              execution,
+            });
           }
-          evaluateBudgetAlerts(state, 'deployment');
+
+          if (execution.status === 'queued' || execution.status === 'running') {
+            request.updatedAt = nowIso();
+            appendAuditEvent(state, {
+              at: nowIso(),
+              action: 'deployment-queued',
+              actor: identity.actor,
+              subject: request.number,
+              details: {
+                assignmentId: assignment.id,
+                executionId: execution.id,
+                externalRunId: execution.externalRunId,
+              },
+            });
+            saveState(state);
+            return send(res, 202, { request, assignment, execution });
+          }
 
           appendAuditEvent(state, {
             at: nowIso(),
-            action: 'deployed',
-            actor: deployment.deployedBy,
+            action: 'deployment-failed',
+            actor: identity.actor,
             subject: request.number,
             details: {
               assignmentId: assignment.id,
               executionId: execution.id,
+              resultMessage: execution.resultMessage,
             },
           });
           saveState(state);
-          send(res, 200, { request, deployment, assignment, execution });
+          return send(res, 502, { error: execution.resultMessage || 'deployment execution failed', execution });
         })
         .catch(err => send(res, 400, { error: err.message }));
     }
 
     if (req.method === 'POST' && action === 'entitlement') {
+      if (!requireRoles(['procurement', 'platform'])) return;
       return readJson(req)
         .then(body => {
           const exceptionActive = hasActiveException(request);
           if (request.state !== 'approved' && !exceptionActive) {
             return send(res, 409, { error: 'request must be approved or have an active exception before entitlement issuance' });
           }
-          const issuedBy = String(body.issuedBy || 'procurement@contoso.com').trim();
+          const issuedBy = identity.actor;
           const issued = issueEntitlementForRequest(request, issuedBy);
           request.entitlements = request.entitlements || [];
           request.entitlements.push(issued.record);
@@ -1004,9 +1191,10 @@ function handleApi(req, res, pathname) {
     }
 
     if (req.method === 'POST' && action === 'assign') {
+      if (!requireRoles(['procurement', 'platform'])) return;
       return readJson(req)
         .then(body => {
-          const actor = String(body.actor || request.procurementApproverEmail || state.config.procurementApproverEmail).trim();
+          const actor = identity.actor;
           const assigned = ensureAssignmentAndBudget(state, request, actor);
           request.updatedAt = nowIso();
           appendAuditEvent(state, {
@@ -1022,9 +1210,10 @@ function handleApi(req, res, pathname) {
     }
 
     if (req.method === 'POST' && action === 'exception') {
+      if (!requireRoles(['requester', 'procurement', 'platform'])) return;
       return readJson(req)
         .then(body => {
-          const requestedBy = String(body.requestedBy || request.requester || 'unknown').trim();
+          const requestedBy = identity.actor;
           const reason = String(body.reason || '').trim();
           const durationHours = Number(body.durationHours || state.config.defaultExceptionDurationHours || 24);
           if (!reason) {
@@ -1065,11 +1254,12 @@ function handleApi(req, res, pathname) {
     }
 
     if (req.method === 'POST' && action === 'exception-decision') {
+      if (!requireRoles(['procurement', 'platform'])) return;
       return readJson(req)
         .then(body => {
           const exceptionId = String(body.exceptionId || '').trim();
           const decision = String(body.decision || '').trim().toLowerCase();
-          const approver = String(body.approver || 'procurement@contoso.com').trim();
+          const approver = identity.actor;
           const reason = String(body.reason || '').trim();
           if (!exceptionId) {
             return send(res, 400, { error: 'exceptionId is required' });
@@ -1117,6 +1307,7 @@ function handleApi(req, res, pathname) {
   }
 
   if (req.method === 'POST' && pathname === '/api/reconciliation/import') {
+    if (!requireRoles(['finance', 'platform'])) return;
     return readJson(req)
       .then(body => {
         const rows = Array.isArray(body.rows) ? body.rows : [];
@@ -1173,7 +1364,7 @@ function handleApi(req, res, pathname) {
         appendAuditEvent(state, {
           at: nowIso(),
           action: 'reconciliation-imported',
-          actor: String(body.importedBy || 'finops@contoso.com').trim(),
+          actor: identity.actor,
           subject: importId,
           details: {
             rows: normalized.length,
@@ -1195,6 +1386,7 @@ function handleApi(req, res, pathname) {
   }
 
   if (req.method === 'POST' && pathname === '/api/reconciliation/run') {
+    if (!requireRoles(['finance', 'platform'])) return;
     recalculateBudgetsFromReconciliation(state);
     state.reconciliation.chargebackSnapshots.unshift({
       id: makeId('chg'),
@@ -1204,7 +1396,7 @@ function handleApi(req, res, pathname) {
     appendAuditEvent(state, {
       at: nowIso(),
       action: 'reconciliation-run',
-      actor: 'system',
+      actor: identity.actor,
       subject: 'manual-reconciliation-run',
     });
     saveState(state);
@@ -1216,6 +1408,7 @@ function handleApi(req, res, pathname) {
   }
 
   if (req.method === 'POST' && pathname === '/api/rbac/drift-report') {
+    if (!requireRoles(['security', 'platform'])) return;
     return readJson(req)
       .then(body => {
         const assignments = Array.isArray(body.assignments) ? body.assignments : [];
@@ -1240,7 +1433,7 @@ function handleApi(req, res, pathname) {
         appendAuditEvent(state, {
           at: nowIso(),
           action: 'rbac-drift-report',
-          actor: String(body.generatedBy || 'security@contoso.com').trim(),
+          actor: identity.actor,
           subject: `findings:${findings.length}`,
         });
         saveState(state);
@@ -1273,6 +1466,15 @@ function handler(req, res) {
 
   if (!serveStatic(filePath, res)) {
     send(res, 404, 'Not found');
+  }
+}
+
+if (process.env.NODE_ENV === 'production') {
+  if (ENTITLEMENT_SECRET === 'apcl-dev-secret-change') {
+    throw new Error('APCL_ENTITLEMENT_SECRET must be set to a strong non-default value in production.');
+  }
+  if (AUTH_MODE === 'none') {
+    throw new Error('APCL_AUTH_MODE=none is not allowed in production.');
   }
 }
 

@@ -29,7 +29,7 @@ param entitlementSecretValue string
 param containerImage string = 'mcr.microsoft.com/azuredocs/containerapps-helloworld:latest'
 
 @description('Container ingress exposure setting.')
-param enableExternalIngress bool = true
+param enableExternalIngress bool = false
 
 @description('Container target port.')
 param containerTargetPort int = 3000
@@ -156,7 +156,11 @@ resource containerApp 'Microsoft.App/containerApps@2024-03-01' = {
             }
             {
               name: 'APCL_DEPLOYMENT_MODE'
-              value: 'local'
+              value: 'webhook'
+            }
+            {
+              name: 'APCL_AUTH_MODE'
+              value: 'easyauth'
             }
           ]
         }

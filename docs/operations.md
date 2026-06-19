@@ -25,6 +25,7 @@
 | `/api/requests/{id}/exception-decision` | POST | Approve/reject exception |
 | `/api/requests/{id}/entitlement` | POST | Issue deployment entitlement token |
 | `/api/requests/{id}/deploy` | POST | Deploy with entitlement token |
+| `/api/deployments/{id}/status` | POST | Update async deployment execution status |
 | `/api/reconciliation/import` | POST | Import usage rows for reconciliation |
 | `/api/reconciliation/summary` | GET | Reconciliation status |
 | `/api/reconciliation/run` | POST | Recompute budget and chargeback snapshots |
@@ -70,6 +71,19 @@ The following remain external by design:
 2. Entra PIM configuration for Azure resource roles.
 3. Tenant-scale policy assignment automation.
 4. SIEM integration and incident workflows.
+
+## Authentication and role model
+
+APCL supports these runtime auth modes:
+
+1. `APCL_AUTH_MODE=none` for local demo only.
+2. `APCL_AUTH_MODE=easyauth` for Azure-hosted identity claims (`x-ms-client-principal`).
+3. `APCL_AUTH_MODE=static` for controlled non-production bearer token testing (`APCL_STATIC_TOKENS_JSON`).
+
+In production:
+
+- `APCL_AUTH_MODE=none` is blocked.
+- default entitlement secret is blocked.
 
 ## Direct Azure deployment (Azure Container Apps)
 

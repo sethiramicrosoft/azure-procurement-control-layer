@@ -101,6 +101,25 @@ Use the URL printed by the deployment script and open:
 - APCL webhook endpoint for vending/orchestration integration
 - scaling and resource sizing
 - security boundaries (networking, RBAC, Key Vault policies)
+- APCL auth mode (`none`, `easyauth`, `static`) and role mapping
+
+### Identity and role enforcement
+
+APCL now supports role-gated APIs using authentication modes:
+
+- `APCL_AUTH_MODE=none` (local demo only)
+- `APCL_AUTH_MODE=easyauth` (recommended for Azure-hosted deployments with Entra/EasyAuth)
+- `APCL_AUTH_MODE=static` (non-production integration testing with static bearer token map)
+
+Required role families:
+
+- `requester` for request submission/update
+- `procurement` for approvals, exceptions, entitlements, assignment
+- `deployer` for deployment actions and run-state callbacks
+- `finance` for reconciliation operations
+- `security`/`platform` for RBAC drift and platform config
+
+`APCL_AUTH_MODE=none` and default entitlement secret are blocked when `NODE_ENV=production`.
 
 ## Why APCL exists
 
@@ -208,7 +227,8 @@ This keeps approvals fast for routine requests while preserving strict controls 
 
 1. APCL approves intent and returns entitlement + assignment context.
 2. Vending/orchestrator consumes APCL payload and executes ALZ-aligned deployment.
-3. APCL stores execution status and reconciliation lineage for procurement/finance evidence.
+3. Orchestrator posts run-state updates back to APCL (`POST /api/deployments/{executionId}/status`).
+4. APCL stores execution status and reconciliation lineage for procurement/finance evidence.
 
 ## Enterprise scale enablement
 
@@ -357,6 +377,8 @@ Use APCL as the control-plane API behind your existing front-door workflow.
 - `POST /api/requests/{id}/exception-decision`
 - `POST /api/requests/{id}/entitlement`
 - `POST /api/requests/{id}/deploy`
+- `GET /api/deployments`
+- `POST /api/deployments/{id}/status`
 - `POST /api/reconciliation/import`
 - `GET /api/reconciliation/summary`
 - `GET /api/audit`
