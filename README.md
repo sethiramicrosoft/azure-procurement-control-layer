@@ -113,6 +113,11 @@ APCL now supports role-gated APIs using authentication modes:
 - `APCL_AUTH_MODE=easyauth` (recommended for Azure-hosted deployments with Entra/EasyAuth)
 - `APCL_AUTH_MODE=static` (non-production integration testing with static bearer token map)
 
+EasyAuth hardening options:
+
+- `APCL_EASYAUTH_ALLOWED_APP_IDS=<comma-separated app ids / audiences>` to reject tokens from unapproved clients.
+- `APCL_EASYAUTH_GROUP_ROLE_MAP_JSON='{"<group-id>":["requester","procurement"]}'` to map Entra groups to APCL roles.
+
 Required role families:
 
 - `requester` for request submission/update
@@ -155,6 +160,18 @@ Webhook integration hardening:
 - Orchestrator callback can call `POST /api/deployments/{id}/status` using header `x-apcl-status-token`.
 - Invalid callback status tokens are rejected with `401`.
 - Deployment execution status transitions are monotonic (`queued -> running -> succeeded/failed`; terminal states cannot regress).
+- APCL webhook trigger now supports retry/timeouts:
+  - `APCL_DEPLOYMENT_WEBHOOK_TIMEOUT_MS` (default `10000`)
+  - `APCL_DEPLOYMENT_WEBHOOK_RETRY_COUNT` (default `2`)
+  - `APCL_DEPLOYMENT_WEBHOOK_RETRY_DELAY_MS` (default `500`)
+- Deployment requests support idempotency replay using header `idempotency-key` (configurable with `APCL_DEPLOYMENT_IDEMPOTENCY_HEADER`).
+
+Governance lock-down option:
+
+- `APCL_ENFORCE_DEPLOYER_ALLOWLIST=true`
+- `APCL_ALLOWED_DEPLOYER_IDENTITIES=<comma-separated deployer identities>`
+
+When enabled, only listed deployer identities (or `platform` role) can call `/api/requests/{id}/deploy`.
 
 ## Validation tests
 
@@ -168,6 +185,7 @@ CI pipeline (`.github/workflows/ci.yml`) runs:
 
 1. `node --check server.js`
 2. `npm test`
+3. `az bicep build --file infra/platform/main.bicep`
 
 ## Why APCL exists
 
@@ -427,6 +445,7 @@ Use APCL as the control-plane API behind your existing front-door workflow.
 - `POST /api/requests/{id}/deploy`
 - `GET /api/deployments`
 - `POST /api/deployments/{id}/status`
+- `GET /api/operations/metrics`
 - `POST /api/reconciliation/import`
 - `GET /api/reconciliation/summary`
 - `GET /api/audit`

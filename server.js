@@ -23,6 +23,31 @@ const STATE_BACKEND = String(process.env.APCL_STATE_BACKEND || 'file').toLowerCa
 const AUDIT_EXPORT_PATH = process.env.APCL_AUDIT_EXPORT_PATH || '';
 const AUDIT_EXPORT_SECRET = process.env.APCL_AUDIT_EXPORT_SECRET || '';
 const AUTH_MODE = String(process.env.APCL_AUTH_MODE || 'none').toLowerCase(); // none | easyauth | static
+const EASYAUTH_ALLOWED_APP_IDS = new Set(
+  String(process.env.APCL_EASYAUTH_ALLOWED_APP_IDS || '')
+    .split(',')
+    .map(v => String(v || '').trim().toLowerCase())
+    .filter(Boolean)
+);
+const EASYAUTH_GROUP_ROLE_MAP = (() => {
+  try {
+    const parsed = JSON.parse(process.env.APCL_EASYAUTH_GROUP_ROLE_MAP_JSON || '{}');
+    return parsed && typeof parsed === 'object' ? parsed : {};
+  } catch {
+    return {};
+  }
+})();
+const DEPLOYMENT_WEBHOOK_TIMEOUT_MS = Math.max(1000, Number(process.env.APCL_DEPLOYMENT_WEBHOOK_TIMEOUT_MS || 10000));
+const DEPLOYMENT_WEBHOOK_RETRY_COUNT = Math.max(0, Number(process.env.APCL_DEPLOYMENT_WEBHOOK_RETRY_COUNT || 2));
+const DEPLOYMENT_WEBHOOK_RETRY_DELAY_MS = Math.max(100, Number(process.env.APCL_DEPLOYMENT_WEBHOOK_RETRY_DELAY_MS || 500));
+const DEPLOYMENT_IDEMPOTENCY_HEADER = String(process.env.APCL_DEPLOYMENT_IDEMPOTENCY_HEADER || 'idempotency-key').toLowerCase();
+const ENFORCE_DEPLOYER_ALLOWLIST = String(process.env.APCL_ENFORCE_DEPLOYER_ALLOWLIST || 'false').toLowerCase() === 'true';
+const ALLOWED_DEPLOYER_IDENTITIES = new Set(
+  String(process.env.APCL_ALLOWED_DEPLOYER_IDENTITIES || '')
+    .split(',')
+    .map(v => String(v || '').trim().toLowerCase())
+    .filter(Boolean)
+);
 const STATIC_TOKEN_MAP = (() => {
   try {
     return JSON.parse(process.env.APCL_STATIC_TOKENS_JSON || '{}');
@@ -54,7 +79,8 @@ function parseMsClientPrincipal(headerValue) {
       }
       return '';
     };
-    const roles = claims
+    const claimValues = type => claims.filter(c => c.typ === type).map(c => String(c.val || '').trim()).filter(Boolean);
+    const roleClaims = claims
       .filter(c =>
         c.typ === 'roles'
         || c.typ === 'role'
@@ -62,6 +88,12 @@ function parseMsClientPrincipal(headerValue) {
       )
       .map(c => String(c.val || '').toLowerCase())
       .filter(Boolean);
+    const groupClaims = claimValues('groups').map(v => v.toLowerCase());
+    const mappedRoles = groupClaims.flatMap(groupId => {
+      const mapped = EASYAUTH_GROUP_ROLE_MAP[groupId] || EASYAUTH_GROUP_ROLE_MAP[groupId.toUpperCase()];
+      return Array.isArray(mapped) ? mapped.map(v => String(v || '').toLowerCase()).filter(Boolean) : [];
+    });
+    const roles = [...new Set([...roleClaims, ...mappedRoles])];
     const actor = claimValue(
       'preferred_username',
       'upn',
@@ -72,6 +104,9 @@ function parseMsClientPrincipal(headerValue) {
       authenticated: true,
       actor,
       roles,
+      groups: groupClaims,
+      appId: claimValue('appid', 'azp') || null,
+      audience: claimValue('aud') || null,
       authSource: 'easyauth',
       principalId: claimValue('oid', 'http://schemas.microsoft.com/identity/claims/objectidentifier') || null,
     };
@@ -96,6 +131,13 @@ function getIdentity(req) {
     const principal = parseMsClientPrincipal(principalHeader);
     if (!principal) {
       return { authenticated: false, reason: 'missing or invalid EasyAuth principal header' };
+    }
+    if (EASYAUTH_ALLOWED_APP_IDS.size) {
+      const appId = String(principal.appId || '').toLowerCase();
+      const audience = String(principal.audience || '').toLowerCase();
+      if (!EASYAUTH_ALLOWED_APP_IDS.has(appId) && !EASYAUTH_ALLOWED_APP_IDS.has(audience)) {
+        return { authenticated: false, reason: 'token audience/appid not allowed' };
+      }
     }
     return principal;
   }
@@ -143,6 +185,22 @@ function isConfiguredActor(actor, ...allowedEmails) {
   const candidate = normalizeEmail(actor);
   if (!candidate) return false;
   return allowedEmails.map(normalizeEmail).filter(Boolean).includes(candidate);
+}
+
+function isAllowedDeployerIdentity(actor) {
+  const candidate = normalizeEmail(actor);
+  if (!candidate) return false;
+  return ALLOWED_DEPLOYER_IDENTITIES.has(candidate);
+}
+
+function getRequestIdempotencyKey(req) {
+  const preferred = String(req.headers[DEPLOYMENT_IDEMPOTENCY_HEADER] || '').trim();
+  const fallback = String(req.headers['idempotency-key'] || '').trim();
+  return preferred || fallback || '';
+}
+
+function wait(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
 }
 
 function timingSafeEquals(a, b) {
@@ -286,6 +344,46 @@ function nextExecutionNumber(state) {
   return `RUN-${String(last + 1).padStart(5, '0')}`;
 }
 
+async function invokeDeploymentWebhookWithRetry(webhookPayload, headers) {
+  const maxAttempts = DEPLOYMENT_WEBHOOK_RETRY_COUNT + 1;
+  let lastError = null;
+  let lastStatus = null;
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    try {
+      const response = await fetch(DEPLOYMENT_WEBHOOK_URL, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify(webhookPayload),
+        signal: AbortSignal.timeout(DEPLOYMENT_WEBHOOK_TIMEOUT_MS),
+      });
+      if (response.ok) {
+        const payload = await response.json().catch(() => ({}));
+        return { ok: true, response, payload, attempt };
+      }
+      lastStatus = response.status;
+      lastError = `webhook trigger failed (${response.status})`;
+      const retryable = response.status === 429 || response.status >= 500;
+      if (!retryable || attempt >= maxAttempts) {
+        break;
+      }
+    } catch (err) {
+      lastError = `webhook trigger failed (${err.message})`;
+      if (attempt >= maxAttempts) {
+        break;
+      }
+    }
+    await wait(DEPLOYMENT_WEBHOOK_RETRY_DELAY_MS * attempt);
+  }
+
+  return {
+    ok: false,
+    status: lastStatus,
+    error: lastError || 'webhook trigger failed',
+    attempt: maxAttempts,
+  };
+}
+
 async function triggerDeploymentExecution(state, request, assignment, body) {
   const execution = {
     id: makeId('run'),
@@ -301,6 +399,7 @@ async function triggerDeploymentExecution(state, request, assignment, body) {
     startedAt: nowIso(),
     completedAt: null,
     resultMessage: null,
+    triggerAttempts: 0,
   };
 
   if (DEPLOYMENT_MODE === 'webhook') {
@@ -325,20 +424,20 @@ async function triggerDeploymentExecution(state, request, assignment, body) {
       headers['x-apcl-timestamp'] = ts;
       headers['x-apcl-signature'] = signature;
     }
-    const response = await fetch(DEPLOYMENT_WEBHOOK_URL, {
-      method: 'POST',
-      headers,
-      body: JSON.stringify(webhookPayload),
-    });
-    if (!response.ok) {
+    headers['idempotency-key'] = execution.id;
+    const webhookResult = await invokeDeploymentWebhookWithRetry(webhookPayload, headers);
+    execution.triggerAttempts = webhookResult.attempt;
+    if (!webhookResult.ok) {
       execution.status = 'failed';
-      execution.resultMessage = `webhook trigger failed (${response.status})`;
+      execution.resultMessage = webhookResult.error;
       return execution;
     }
-    const payload = await response.json().catch(() => ({}));
+    const payload = webhookResult.payload || {};
     execution.externalRunId = payload.runId || payload.id || execution.id;
     execution.status = 'queued';
-    execution.resultMessage = 'queued via webhook';
+    execution.resultMessage = webhookResult.attempt > 1
+      ? `queued via webhook (after ${webhookResult.attempt} attempts)`
+      : 'queued via webhook';
     return execution;
   }
 
@@ -450,7 +549,7 @@ function seedState() {
       version: '1.1.0',
       createdAt: nowIso(),
       policyPackVersion: 'apcl-baseline-initiative@1.0.0',
-      controlPlane: 'phase2',
+      controlPlane: 'phase5',
     },
     config: {
       managerApproverEmail: 'manager@contoso.com',
@@ -543,6 +642,7 @@ function seedState() {
     ],
     assignments: [],
     deploymentExecutions: [],
+    deploymentIdempotency: [],
     budgetAlerts: [],
     reconciliation: {
       imports: [],
@@ -618,6 +718,7 @@ function normalizeState(parsed) {
   parsed.assignmentPolicies = parsed.assignmentPolicies || [];
   parsed.assignments = parsed.assignments || [];
   parsed.deploymentExecutions = parsed.deploymentExecutions || [];
+  parsed.deploymentIdempotency = parsed.deploymentIdempotency || [];
   parsed.budgetAlerts = parsed.budgetAlerts || [];
   parsed.tenants = parsed.tenants || [];
   for (const request of parsed.requests || []) {
@@ -854,6 +955,71 @@ function summarizeReconciliation(state) {
   };
 }
 
+function getExecutionResponseStatus(execution) {
+  if (!execution) return 404;
+  if (execution.status === 'queued' || execution.status === 'running') return 202;
+  if (execution.status === 'failed') return 502;
+  return 200;
+}
+
+function findIdempotentExecution(state, request, key) {
+  if (!key) return null;
+  const record = (state.deploymentIdempotency || []).find(
+    r => r.requestId === request.id && r.key === key
+  );
+  if (!record) return null;
+  const execution = (state.deploymentExecutions || []).find(e => e.id === record.executionId);
+  return execution ? { record, execution } : null;
+}
+
+function rememberIdempotentExecution(state, request, key, execution) {
+  if (!key) return;
+  state.deploymentIdempotency = state.deploymentIdempotency || [];
+  state.deploymentIdempotency.unshift({
+    id: makeId('idem'),
+    requestId: request.id,
+    requestNumber: request.number,
+    key,
+    executionId: execution.id,
+    recordedAt: nowIso(),
+  });
+  state.deploymentIdempotency = state.deploymentIdempotency.slice(0, 5000);
+}
+
+function calculateOperationalMetrics(state) {
+  const runs = state.deploymentExecutions || [];
+  const completed = runs.filter(r => isTerminalDeploymentStatus(r.status) && r.completedAt && r.startedAt);
+  const totalDurationMs = completed.reduce((sum, run) => {
+    const duration = new Date(run.completedAt).getTime() - new Date(run.startedAt).getTime();
+    return sum + (Number.isFinite(duration) && duration > 0 ? duration : 0);
+  }, 0);
+  const statusCounts = runs.reduce((acc, run) => {
+    const status = String(run.status || 'unknown');
+    acc[status] = (acc[status] || 0) + 1;
+    return acc;
+  }, {});
+  return {
+    generatedAt: nowIso(),
+    requests: {
+      total: state.requests.length,
+      submitted: state.requests.filter(r => r.state === 'submitted').length,
+      approved: state.requests.filter(r => r.state === 'approved').length,
+      deployed: state.requests.filter(r => r.state === 'deployed').length,
+      blocked: state.requests.filter(r => r.state === 'blocked').length,
+      rejected: state.requests.filter(r => r.state === 'rejected').length,
+    },
+    deployments: {
+      total: runs.length,
+      byStatus: statusCounts,
+      completed: completed.length,
+      averageDurationMs: completed.length ? Math.round(totalDurationMs / completed.length) : 0,
+      webhookRetriesObserved: runs.filter(r => Number(r.triggerAttempts || 0) > 1).length,
+    },
+    budgetAlertsOpen: (state.budgetAlerts || []).length,
+    reconciliation: summarizeReconciliation(state),
+  };
+}
+
 function handleApi(req, res, pathname) {
   const state = loadState();
   const deploymentStatusPath = /^\/api\/deployments\/[^/]+\/status$/.test(pathname);
@@ -964,6 +1130,12 @@ function handleApi(req, res, pathname) {
         deploymentMode: DEPLOYMENT_MODE,
         deploymentStatusTokenConfigured: Boolean(DEPLOYMENT_STATUS_TOKEN),
         deploymentWebhookSignatureEnabled: Boolean(DEPLOYMENT_WEBHOOK_HMAC_SECRET),
+        deploymentWebhookRetryCount: DEPLOYMENT_WEBHOOK_RETRY_COUNT,
+        deploymentWebhookTimeoutMs: DEPLOYMENT_WEBHOOK_TIMEOUT_MS,
+        enforceDeployerAllowlist: ENFORCE_DEPLOYER_ALLOWLIST,
+        allowedDeployerIdentityCount: ALLOWED_DEPLOYER_IDENTITIES.size,
+        easyauthAllowedAppIdsConfigured: EASYAUTH_ALLOWED_APP_IDS.size,
+        easyauthGroupRoleMappings: Object.keys(EASYAUTH_GROUP_ROLE_MAP || {}).length,
       },
       tenants: state.tenants,
       assignments: {
@@ -984,9 +1156,17 @@ function handleApi(req, res, pathname) {
     return send(res, 200, { deployments: state.deploymentExecutions });
   }
 
+  if (req.method === 'GET' && pathname === '/api/operations/metrics') {
+    if (!requireRoles(['security', 'platform'])) return;
+    return send(res, 200, { metrics: calculateOperationalMetrics(state) });
+  }
+
   const deploymentStatusMatch = pathname.match(/^\/api\/deployments\/([^/]+)\/status$/);
   if (deploymentStatusMatch && req.method === 'POST') {
     if (!requireRoles(['deployer', 'platform'])) return;
+    if (DEPLOYMENT_STATUS_TOKEN && !callbackTokenValid && !isPlatformActor(identity)) {
+      return send(res, 401, { error: 'deployment status token required for callback updates' });
+    }
     const executionRef = decodeURIComponent(deploymentStatusMatch[1]);
     return readJson(req)
       .then(body => {
@@ -1208,6 +1388,29 @@ function handleApi(req, res, pathname) {
       if (!requireRoles(['deployer', 'platform'])) return;
       return readJson(req)
         .then(async body => {
+          if (ENFORCE_DEPLOYER_ALLOWLIST && !isPlatformActor(identity) && !isAllowedDeployerIdentity(identity.actor)) {
+            return send(res, 403, { error: 'actor not authorized for deployment execution in governance mode' });
+          }
+
+          const idempotencyKey = getRequestIdempotencyKey(req);
+          const existingExecution = findIdempotentExecution(state, request, idempotencyKey);
+          if (existingExecution) {
+            const assignment = state.assignments.find(a => a.id === existingExecution.execution.assignmentId) || null;
+            const deployment = (request.deployments || []).find(d => d.executionId === existingExecution.execution.id) || null;
+            return send(
+              res,
+              getExecutionResponseStatus(existingExecution.execution),
+              {
+                request,
+                assignment,
+                deployment,
+                execution: existingExecution.execution,
+                idempotentReplay: true,
+                idempotencyKey,
+              }
+            );
+          }
+
           const exceptionActive = hasActiveException(request);
           if (request.state !== 'approved' && !exceptionActive) {
             return send(res, 409, { error: 'request must be approved or have an active exception before deployment' });
@@ -1232,6 +1435,7 @@ function handleApi(req, res, pathname) {
             deployedBy: identity.actor,
           });
           state.deploymentExecutions.unshift(execution);
+          rememberIdempotentExecution(state, request, idempotencyKey, execution);
 
           if (execution.status === 'succeeded') {
             finalizeDeploymentSuccess(state, request, execution, validation);
@@ -1252,6 +1456,7 @@ function handleApi(req, res, pathname) {
               deployment: request.deployments[request.deployments.length - 1],
               assignment,
               execution,
+              idempotencyKey: idempotencyKey || null,
             });
           }
 
@@ -1269,7 +1474,7 @@ function handleApi(req, res, pathname) {
               },
             });
             saveState(state);
-            return send(res, 202, { request, assignment, execution });
+            return send(res, 202, { request, assignment, execution, idempotencyKey: idempotencyKey || null });
           }
 
           appendAuditEvent(state, {
@@ -1284,7 +1489,7 @@ function handleApi(req, res, pathname) {
             },
           });
           saveState(state);
-          return send(res, 502, { error: execution.resultMessage || 'deployment execution failed', execution });
+          return send(res, 502, { error: execution.resultMessage || 'deployment execution failed', execution, idempotencyKey: idempotencyKey || null });
         })
         .catch(err => send(res, 400, { error: err.message }));
     }
@@ -1642,6 +1847,15 @@ if (process.env.NODE_ENV === 'production') {
   }
   if (AUTH_MODE === 'none') {
     throw new Error('APCL_AUTH_MODE=none is not allowed in production.');
+  }
+  if (DEPLOYMENT_MODE === 'webhook' && !DEPLOYMENT_WEBHOOK_HMAC_SECRET) {
+    throw new Error('APCL_DEPLOYMENT_WEBHOOK_HMAC_SECRET must be configured in production webhook mode.');
+  }
+  if (DEPLOYMENT_MODE === 'webhook' && !DEPLOYMENT_STATUS_TOKEN) {
+    throw new Error('APCL_DEPLOYMENT_STATUS_TOKEN must be configured in production webhook mode.');
+  }
+  if (ENFORCE_DEPLOYER_ALLOWLIST && !ALLOWED_DEPLOYER_IDENTITIES.size) {
+    throw new Error('APCL_ALLOWED_DEPLOYER_IDENTITIES must contain at least one identity when allowlist enforcement is enabled.');
   }
 }
 

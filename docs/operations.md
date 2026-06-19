@@ -26,6 +26,7 @@
 | `/api/requests/{id}/entitlement` | POST | Issue deployment entitlement token |
 | `/api/requests/{id}/deploy` | POST | Deploy with entitlement token |
 | `/api/deployments/{id}/status` | POST | Update async deployment execution status |
+| `/api/operations/metrics` | GET | Operational metrics (security/platform) |
 | `/api/reconciliation/import` | POST | Import usage rows for reconciliation |
 | `/api/reconciliation/summary` | GET | Reconciliation status |
 | `/api/reconciliation/run` | POST | Recompute budget and chargeback snapshots |
@@ -91,6 +92,7 @@ Authority checks:
 - Request approval requires configured procurement approver identity (or platform role).
 - Exception decision / entitlement issuance / assignment require configured procurement approver identity (or platform role).
 - Requester exception submission is limited to the originating requester identity (unless procurement/platform role).
+- Optional deploy governance mode limits `/deploy` to an explicit allowlist (`APCL_ENFORCE_DEPLOYER_ALLOWLIST=true` + `APCL_ALLOWED_DEPLOYER_IDENTITIES`).
 
 ## State backend and audit export
 
@@ -106,6 +108,14 @@ Optional settings:
 - `APCL_AUDIT_EXPORT_SECRET=<hmac-signing-secret>`
 - `APCL_DEPLOYMENT_WEBHOOK_HMAC_SECRET=<shared-secret>`
 - `APCL_DEPLOYMENT_STATUS_TOKEN=<shared-callback-token>`
+- `APCL_DEPLOYMENT_WEBHOOK_TIMEOUT_MS=<milliseconds>`
+- `APCL_DEPLOYMENT_WEBHOOK_RETRY_COUNT=<attempts-after-first>`
+- `APCL_DEPLOYMENT_WEBHOOK_RETRY_DELAY_MS=<milliseconds>`
+- `APCL_DEPLOYMENT_IDEMPOTENCY_HEADER=<header-name>`
+- `APCL_EASYAUTH_ALLOWED_APP_IDS=<comma-separated app ids/audiences>`
+- `APCL_EASYAUTH_GROUP_ROLE_MAP_JSON=<json group-to-role map>`
+- `APCL_ENFORCE_DEPLOYER_ALLOWLIST=true|false`
+- `APCL_ALLOWED_DEPLOYER_IDENTITIES=<comma-separated identities>`
 
 When SQLite backend is enabled, state writes use version-checked updates to reduce silent overwrite risk under concurrent requests.
 
@@ -116,6 +126,8 @@ Webhook signing:
 3. Orchestrator should verify timestamp freshness and signature before accepting trigger.
 4. Callback requests with invalid `x-apcl-status-token` are rejected with `401`.
 5. Deployment status updates are transition-validated (terminal `succeeded/failed` runs cannot transition back to `running/queued`).
+6. Webhook trigger path retries transient failures (429/5xx/network) using the configured timeout/retry controls.
+7. Deployment requests can be safely retried by caller with idempotency key header; APCL replays the recorded execution response.
 
 ## Automated validation
 

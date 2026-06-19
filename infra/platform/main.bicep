@@ -182,6 +182,38 @@ resource containerApp 'Microsoft.App/containerApps@2024-03-01' = {
               name: 'APCL_DEPLOYMENT_STATUS_TOKEN'
               value: ''
             }
+            {
+              name: 'APCL_DEPLOYMENT_WEBHOOK_TIMEOUT_MS'
+              value: '10000'
+            }
+            {
+              name: 'APCL_DEPLOYMENT_WEBHOOK_RETRY_COUNT'
+              value: '2'
+            }
+            {
+              name: 'APCL_DEPLOYMENT_WEBHOOK_RETRY_DELAY_MS'
+              value: '500'
+            }
+            {
+              name: 'APCL_ENFORCE_DEPLOYER_ALLOWLIST'
+              value: 'false'
+            }
+            {
+              name: 'APCL_ALLOWED_DEPLOYER_IDENTITIES'
+              value: ''
+            }
+            {
+              name: 'APCL_DEPLOYMENT_IDEMPOTENCY_HEADER'
+              value: 'idempotency-key'
+            }
+            {
+              name: 'APCL_EASYAUTH_ALLOWED_APP_IDS'
+              value: ''
+            }
+            {
+              name: 'APCL_EASYAUTH_GROUP_ROLE_MAP_JSON'
+              value: '{}'
+            }
           ]
         }
       ]

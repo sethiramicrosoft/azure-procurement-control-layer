@@ -22,8 +22,24 @@ function createStaticTokens() {
     proctoken: { actor: 'procurement@contoso.com', roles: ['procurement'] },
     rogueproctoken: { actor: 'rogue-procurement@contoso.com', roles: ['procurement'] },
     depltoken: { actor: 'deployer@contoso.com', roles: ['deployer'] },
+    pipelinetoken: { actor: 'pipeline@contoso.com', roles: ['deployer'] },
     pltoken: { actor: 'platform@contoso.com', roles: ['platform'] },
   });
+}
+
+function easyAuthPrincipal({ actor, roles = [], groups = [], appId = 'apcl-client-id' }) {
+  const claims = [
+    { typ: 'preferred_username', val: actor },
+    { typ: 'appid', val: appId },
+  ];
+  for (const role of roles) {
+    claims.push({ typ: 'roles', val: role });
+  }
+  for (const group of groups) {
+    claims.push({ typ: 'groups', val: group });
+  }
+  const principal = { claims };
+  return Buffer.from(JSON.stringify(principal), 'utf8').toString('base64');
 }
 
 async function waitForServer(proc, timeoutMs = 15000) {
@@ -123,7 +139,7 @@ function requestPayload() {
     procurementApproverEmail: 'procurement@contoso.com',
     desiredBudgetCap: 5000,
     estimatedMonthlyCost: 200,
-    justification: 'phase 3 test',
+    justification: 'phase test',
   };
 }
 
@@ -240,6 +256,7 @@ test('webhook signing + callback status token flow', async () => {
     assert.ok(webhookRequest);
     assert.ok(webhookRequest.headers['x-apcl-signature']);
     assert.ok(webhookRequest.headers['x-apcl-timestamp']);
+    assert.ok(webhookRequest.headers['idempotency-key']);
 
     const statusUpdate = await api(app.baseUrl, `/api/deployments/${executionId}/status`, {
       method: 'POST',
@@ -373,5 +390,119 @@ test('callback token errors and status transition guard are enforced', async () 
   } finally {
     await app.stop();
     await new Promise(resolve => webhookServer.close(resolve));
+  }
+});
+
+test('deploy governance allowlist and idempotency replay are enforced', async () => {
+  const app = startApcl({
+    APCL_DEPLOYMENT_MODE: 'local',
+    APCL_ENFORCE_DEPLOYER_ALLOWLIST: 'true',
+    APCL_ALLOWED_DEPLOYER_IDENTITIES: 'pipeline@contoso.com',
+  });
+  await app.ready();
+  try {
+    const created = await api(app.baseUrl, '/api/requests', {
+      method: 'POST',
+      token: 'reqtoken',
+      body: requestPayload(),
+    });
+    const reqId = created.payload.request.id;
+
+    await api(app.baseUrl, `/api/requests/${reqId}/decision`, {
+      method: 'POST',
+      token: 'proctoken',
+      body: { decision: 'approved', comment: 'ok' },
+    });
+
+    const ent = await api(app.baseUrl, `/api/requests/${reqId}/entitlement`, {
+      method: 'POST',
+      token: 'proctoken',
+      body: {},
+    });
+    const entitlementToken = ent.payload.entitlementToken;
+
+    const blockedDeploy = await api(app.baseUrl, `/api/requests/${reqId}/deploy`, {
+      method: 'POST',
+      token: 'depltoken',
+      body: { entitlementToken },
+      headers: { 'idempotency-key': 'deploy-key-1' },
+    });
+    assert.equal(blockedDeploy.response.status, 403);
+
+    const deployed = await api(app.baseUrl, `/api/requests/${reqId}/deploy`, {
+      method: 'POST',
+      token: 'pipelinetoken',
+      body: { entitlementToken },
+      headers: { 'idempotency-key': 'deploy-key-2' },
+    });
+    assert.equal(deployed.response.status, 200);
+    assert.equal(deployed.payload.idempotencyKey, 'deploy-key-2');
+    const executionId = deployed.payload.execution.id;
+
+    const replayed = await api(app.baseUrl, `/api/requests/${reqId}/deploy`, {
+      method: 'POST',
+      token: 'pipelinetoken',
+      body: { entitlementToken: 'intentionally-invalid-on-replay' },
+      headers: { 'idempotency-key': 'deploy-key-2' },
+    });
+    assert.equal(replayed.response.status, 200);
+    assert.equal(replayed.payload.idempotentReplay, true);
+    assert.equal(replayed.payload.execution.id, executionId);
+  } finally {
+    await app.stop();
+  }
+});
+
+test('easyauth role/group mapping and app allowlist enforcement', async () => {
+  const groupRoleMap = {
+    'group-requester': ['requester'],
+    'group-procurement': ['procurement'],
+  };
+  const app = startApcl({
+    APCL_AUTH_MODE: 'easyauth',
+    APCL_EASYAUTH_GROUP_ROLE_MAP_JSON: JSON.stringify(groupRoleMap),
+    APCL_EASYAUTH_ALLOWED_APP_IDS: 'apcl-client-id',
+  });
+  await app.ready();
+  try {
+    const deniedSummary = await api(app.baseUrl, '/api/summary', {
+      headers: {
+        'x-ms-client-principal': easyAuthPrincipal({
+          actor: 'user@contoso.com',
+          groups: ['group-requester'],
+          appId: 'wrong-client-id',
+        }),
+      },
+    });
+    assert.equal(deniedSummary.response.status, 401);
+
+    const created = await api(app.baseUrl, '/api/requests', {
+      method: 'POST',
+      headers: {
+        'x-ms-client-principal': easyAuthPrincipal({
+          actor: 'requester@contoso.com',
+          groups: ['group-requester'],
+          appId: 'apcl-client-id',
+        }),
+      },
+      body: requestPayload(),
+    });
+    assert.equal(created.response.status, 201);
+    const reqId = created.payload.request.id;
+
+    const approved = await api(app.baseUrl, `/api/requests/${reqId}/decision`, {
+      method: 'POST',
+      headers: {
+        'x-ms-client-principal': easyAuthPrincipal({
+          actor: 'procurement@contoso.com',
+          groups: ['group-procurement'],
+          appId: 'apcl-client-id',
+        }),
+      },
+      body: { decision: 'approved', comment: 'approved via group mapping' },
+    });
+    assert.equal(approved.response.status, 200);
+  } finally {
+    await app.stop();
   }
 });
