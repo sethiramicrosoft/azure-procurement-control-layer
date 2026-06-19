@@ -153,6 +153,8 @@ Webhook integration hardening:
   - `x-apcl-signature` (`HMAC_SHA256(secret, "<timestamp>.<raw-json-body>")`)
 - `APCL_DEPLOYMENT_STATUS_TOKEN=<shared-callback-token>`
 - Orchestrator callback can call `POST /api/deployments/{id}/status` using header `x-apcl-status-token`.
+- Invalid callback status tokens are rejected with `401`.
+- Deployment execution status transitions are monotonic (`queued -> running -> succeeded/failed`; terminal states cannot regress).
 
 ## Validation tests
 

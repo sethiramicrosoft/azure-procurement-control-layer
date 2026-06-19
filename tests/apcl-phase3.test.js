@@ -188,40 +188,6 @@ test('webhook signing + callback status token flow', async () => {
     req.on('data', chunk => {
       body += chunk;
     });
-
-    test('approval authority is enforced for procurement actions', async () => {
-      const app = startApcl({ APCL_DEPLOYMENT_MODE: 'local' });
-      await app.ready();
-      try {
-        const created = await api(app.baseUrl, '/api/requests', {
-          method: 'POST',
-          token: 'reqtoken',
-          body: {
-            ...requestPayload(),
-            procurementApproverEmail: 'procurement@contoso.com',
-          },
-        });
-        assert.equal(created.response.status, 201);
-        const reqId = created.payload.request.id;
-
-        const unauthorizedDecision = await api(app.baseUrl, `/api/requests/${reqId}/decision`, {
-          method: 'POST',
-          token: 'rogueproctoken',
-          body: { decision: 'approved', comment: 'try approve' },
-        });
-        assert.equal(unauthorizedDecision.response.status, 403);
-        assert.match(String(unauthorizedDecision.payload.error || ''), /not authorized/i);
-
-        const authorizedDecision = await api(app.baseUrl, `/api/requests/${reqId}/decision`, {
-          method: 'POST',
-          token: 'proctoken',
-          body: { decision: 'approved', comment: 'approved' },
-        });
-        assert.equal(authorizedDecision.response.status, 200);
-      } finally {
-        await app.stop();
-      }
-    });
     req.on('end', () => {
       webhookRequest = {
         headers: req.headers,
@@ -285,6 +251,125 @@ test('webhook signing + callback status token flow', async () => {
     const requests = await api(app.baseUrl, '/api/requests', { token: 'reqtoken' });
     const updated = requests.payload.requests.find(r => r.id === reqId);
     assert.equal(updated.state, 'deployed');
+  } finally {
+    await app.stop();
+    await new Promise(resolve => webhookServer.close(resolve));
+  }
+});
+
+test('approval authority is enforced for procurement actions', async () => {
+  const app = startApcl({ APCL_DEPLOYMENT_MODE: 'local' });
+  await app.ready();
+  try {
+    const created = await api(app.baseUrl, '/api/requests', {
+      method: 'POST',
+      token: 'reqtoken',
+      body: {
+        ...requestPayload(),
+        procurementApproverEmail: 'procurement@contoso.com',
+      },
+    });
+    assert.equal(created.response.status, 201);
+    const reqId = created.payload.request.id;
+
+    const unauthorizedDecision = await api(app.baseUrl, `/api/requests/${reqId}/decision`, {
+      method: 'POST',
+      token: 'rogueproctoken',
+      body: { decision: 'approved', comment: 'try approve' },
+    });
+    assert.equal(unauthorizedDecision.response.status, 403);
+    assert.match(String(unauthorizedDecision.payload.error || ''), /not authorized/i);
+
+    const authorizedDecision = await api(app.baseUrl, `/api/requests/${reqId}/decision`, {
+      method: 'POST',
+      token: 'proctoken',
+      body: { decision: 'approved', comment: 'approved' },
+    });
+    assert.equal(authorizedDecision.response.status, 200);
+  } finally {
+    await app.stop();
+  }
+});
+
+test('callback token errors and status transition guard are enforced', async () => {
+  const webhookPort = randomPort();
+  const webhookServer = http.createServer((req, res) => {
+    let body = '';
+    req.on('data', chunk => {
+      body += chunk;
+    });
+    req.on('end', () => {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ runId: 'external-guard' }));
+    });
+  });
+  await new Promise(resolve => webhookServer.listen(webhookPort, resolve));
+
+  const app = startApcl({
+    APCL_DEPLOYMENT_MODE: 'webhook',
+    APCL_DEPLOYMENT_WEBHOOK_URL: `http://localhost:${webhookPort}/hook`,
+    APCL_DEPLOYMENT_WEBHOOK_HMAC_SECRET: 'hmac-secret',
+    APCL_DEPLOYMENT_STATUS_TOKEN: 'status-secret',
+  });
+  await app.ready();
+
+  try {
+    const created = await api(app.baseUrl, '/api/requests', {
+      method: 'POST',
+      token: 'reqtoken',
+      body: requestPayload(),
+    });
+    const reqId = created.payload.request.id;
+
+    await api(app.baseUrl, `/api/requests/${reqId}/decision`, {
+      method: 'POST',
+      token: 'proctoken',
+      body: { decision: 'approved', comment: 'ok' },
+    });
+
+    const ent = await api(app.baseUrl, `/api/requests/${reqId}/entitlement`, {
+      method: 'POST',
+      token: 'proctoken',
+      body: {},
+    });
+    const entitlementToken = ent.payload.entitlementToken;
+
+    const deploy = await api(app.baseUrl, `/api/requests/${reqId}/deploy`, {
+      method: 'POST',
+      token: 'depltoken',
+      body: { entitlementToken },
+    });
+    assert.equal(deploy.response.status, 202);
+    const executionId = deploy.payload.execution.id;
+
+    const missingToken = await api(app.baseUrl, `/api/deployments/${executionId}/status`, {
+      method: 'POST',
+      body: { status: 'running', externalRunId: 'external-guard' },
+    });
+    assert.equal(missingToken.response.status, 401);
+
+    const invalidToken = await api(app.baseUrl, `/api/deployments/${executionId}/status`, {
+      method: 'POST',
+      headers: { 'x-apcl-status-token': 'wrong-token' },
+      body: { status: 'running', externalRunId: 'external-guard' },
+    });
+    assert.equal(invalidToken.response.status, 401);
+    assert.match(String(invalidToken.payload.error || ''), /invalid deployment status token/i);
+
+    const markSucceeded = await api(app.baseUrl, `/api/deployments/${executionId}/status`, {
+      method: 'POST',
+      headers: { 'x-apcl-status-token': 'status-secret' },
+      body: { status: 'succeeded', externalRunId: 'external-guard', resultMessage: 'done' },
+    });
+    assert.equal(markSucceeded.response.status, 200);
+
+    const regressToRunning = await api(app.baseUrl, `/api/deployments/${executionId}/status`, {
+      method: 'POST',
+      headers: { 'x-apcl-status-token': 'status-secret' },
+      body: { status: 'running', externalRunId: 'external-guard' },
+    });
+    assert.equal(regressToRunning.response.status, 409);
+    assert.match(String(regressToRunning.payload.error || ''), /invalid status transition/i);
   } finally {
     await app.stop();
     await new Promise(resolve => webhookServer.close(resolve));

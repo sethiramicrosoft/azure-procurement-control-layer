@@ -158,6 +158,27 @@ function hasValidDeploymentStatusToken(req) {
   return supplied && timingSafeEquals(supplied, DEPLOYMENT_STATUS_TOKEN);
 }
 
+function isTerminalDeploymentStatus(status) {
+  const normalized = String(status || '').toLowerCase();
+  return normalized === 'succeeded' || normalized === 'failed';
+}
+
+function isValidDeploymentStatusTransition(currentStatus, nextStatus) {
+  const current = String(currentStatus || '').toLowerCase();
+  const next = String(nextStatus || '').toLowerCase();
+  if (!current || current === next) return true;
+  if (current === 'queued') {
+    return ['running', 'succeeded', 'failed'].includes(next);
+  }
+  if (current === 'running') {
+    return ['succeeded', 'failed'].includes(next);
+  }
+  if (isTerminalDeploymentStatus(current)) {
+    return false;
+  }
+  return false;
+}
+
 const stateStore = createStateStore({
   dataDir: DATA_DIR,
   dataFile: DATA_FILE,
@@ -836,12 +857,18 @@ function summarizeReconciliation(state) {
 function handleApi(req, res, pathname) {
   const state = loadState();
   const deploymentStatusPath = /^\/api\/deployments\/[^/]+\/status$/.test(pathname);
+  const suppliedStatusToken = deploymentStatusPath
+    ? String(req.headers['x-apcl-status-token'] || '').trim()
+    : '';
   const callbackTokenValid = deploymentStatusPath && hasValidDeploymentStatusToken(req);
+  if (deploymentStatusPath && DEPLOYMENT_STATUS_TOKEN && suppliedStatusToken && !callbackTokenValid) {
+    return send(res, 401, { error: 'invalid deployment status token' });
+  }
   const identity = callbackTokenValid
     ? {
       authenticated: true,
       actor: 'orchestrator-callback',
-      roles: ['deployer', 'platform'],
+      roles: ['deployer'],
       authSource: 'status-token',
       principalId: null,
     }
@@ -973,10 +1000,16 @@ function handleApi(req, res, pathname) {
         if (!execution) {
           return send(res, 404, { error: 'deployment execution not found' });
         }
+        if (!isValidDeploymentStatusTransition(execution.status, nextStatus)) {
+          return send(res, 409, {
+            error: `invalid status transition: ${execution.status} -> ${nextStatus}`,
+            executionId: execution.id,
+          });
+        }
         execution.status = nextStatus;
         execution.resultMessage = String(body.resultMessage || execution.resultMessage || '').trim() || null;
         execution.externalRunId = String(body.externalRunId || execution.externalRunId || '').trim() || null;
-        if (nextStatus === 'succeeded' || nextStatus === 'failed') {
+        if (isTerminalDeploymentStatus(nextStatus)) {
           execution.completedAt = nowIso();
         }
 

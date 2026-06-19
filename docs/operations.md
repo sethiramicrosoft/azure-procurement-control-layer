@@ -114,6 +114,8 @@ Webhook signing:
 1. APCL includes `x-apcl-timestamp` and `x-apcl-signature` when `APCL_DEPLOYMENT_WEBHOOK_HMAC_SECRET` is set.
 2. Signature formula: `HMAC_SHA256(secret, "<timestamp>.<raw-json-body>")`.
 3. Orchestrator should verify timestamp freshness and signature before accepting trigger.
+4. Callback requests with invalid `x-apcl-status-token` are rejected with `401`.
+5. Deployment status updates are transition-validated (terminal `succeeded/failed` runs cannot transition back to `running/queued`).
 
 ## Automated validation
 
