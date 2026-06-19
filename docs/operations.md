@@ -26,6 +26,7 @@
 | `/api/requests/{id}/entitlement` | POST | Issue deployment entitlement token |
 | `/api/requests/{id}/deploy` | POST | Deploy with entitlement token |
 | `/api/deployments/{id}/status` | POST | Update async deployment execution status |
+| `/api/governance/posture` | GET | Governance control posture checks |
 | `/api/operations/metrics` | GET | Operational metrics (security/platform) |
 | `/api/reconciliation/import` | POST | Import usage rows for reconciliation |
 | `/api/reconciliation/summary` | GET | Reconciliation status |
@@ -64,6 +65,14 @@ Run:
 
 This generates a remediation plan for high-privilege assignments. Use `-Apply` only after review.
 
+For broader subscription/management-group governance lockdown bootstrap:
+
+```powershell
+./scripts/governance-lockdown-baseline.ps1 -SubscriptionId <sub-id>
+```
+
+Incident runbook: `docs/incident-runbook.md`.
+
 ## Production prerequisites outside this repo
 
 The following remain external by design:
@@ -93,6 +102,7 @@ Authority checks:
 - Exception decision / entitlement issuance / assignment require configured procurement approver identity (or platform role).
 - Requester exception submission is limited to the originating requester identity (unless procurement/platform role).
 - Optional deploy governance mode limits `/deploy` to an explicit allowlist (`APCL_ENFORCE_DEPLOYER_ALLOWLIST=true` + `APCL_ALLOWED_DEPLOYER_IDENTITIES`).
+- Approver authority can be enforced by claim groups using `APCL_APPROVER_GROUPS_JSON`.
 
 ## State backend and audit export
 
@@ -113,9 +123,16 @@ Optional settings:
 - `APCL_DEPLOYMENT_WEBHOOK_RETRY_DELAY_MS=<milliseconds>`
 - `APCL_DEPLOYMENT_IDEMPOTENCY_HEADER=<header-name>`
 - `APCL_EASYAUTH_ALLOWED_APP_IDS=<comma-separated app ids/audiences>`
+- `APCL_EASYAUTH_ALLOWED_TENANT_IDS=<comma-separated tenant ids>`
 - `APCL_EASYAUTH_GROUP_ROLE_MAP_JSON=<json group-to-role map>`
+- `APCL_APPROVER_GROUPS_JSON=<json approver-group map>`
 - `APCL_ENFORCE_DEPLOYER_ALLOWLIST=true|false`
 - `APCL_ALLOWED_DEPLOYER_IDENTITIES=<comma-separated identities>`
+- `APCL_DEPLOYMENT_POLL_ENABLED=true|false`
+- `APCL_DEPLOYMENT_POLL_URL_TEMPLATE=<url containing {runId}>`
+- `APCL_DEPLOYMENT_POLL_INTERVAL_MS=<milliseconds>`
+- `APCL_DEPLOYMENT_POLL_MAX_ATTEMPTS=<attempts>`
+- `APCL_DEPLOYMENT_POLL_BEARER_TOKEN=<bearer token for poll endpoint>`
 
 When SQLite backend is enabled, state writes use version-checked updates to reduce silent overwrite risk under concurrent requests.
 
@@ -128,6 +145,7 @@ Webhook signing:
 5. Deployment status updates are transition-validated (terminal `succeeded/failed` runs cannot transition back to `running/queued`).
 6. Webhook trigger path retries transient failures (429/5xx/network) using the configured timeout/retry controls.
 7. Deployment requests can be safely retried by caller with idempotency key header; APCL replays the recorded execution response.
+8. When poll mode is enabled, APCL queries the external run endpoint until terminal state or poll window exhaustion.
 
 ## Automated validation
 
@@ -136,6 +154,8 @@ npm test
 ```
 
 CI workflow: `.github/workflows/ci.yml` (push + PR).
+
+Security workflow: `.github/workflows/security.yml` (CodeQL + npm audit gate).
 
 ## Direct Azure deployment (Azure Container Apps)
 

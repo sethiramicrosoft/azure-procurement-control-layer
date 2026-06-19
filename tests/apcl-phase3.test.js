@@ -506,3 +506,84 @@ test('easyauth role/group mapping and app allowlist enforcement', async () => {
     await app.stop();
   }
 });
+
+test('webhook polling can finalize deployment to succeeded', async () => {
+  const webhookPort = randomPort();
+  const pollPort = randomPort();
+  let pollCount = 0;
+
+  const webhookServer = http.createServer((req, res) => {
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ runId: 'poll-run-1' }));
+  });
+  const pollServer = http.createServer((req, res) => {
+    pollCount += 1;
+    const status = pollCount >= 2 ? 'succeeded' : 'running';
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ status, resultMessage: 'polled' }));
+  });
+  await new Promise(resolve => webhookServer.listen(webhookPort, resolve));
+  await new Promise(resolve => pollServer.listen(pollPort, resolve));
+
+  const app = startApcl({
+    APCL_DEPLOYMENT_MODE: 'webhook',
+    APCL_DEPLOYMENT_WEBHOOK_URL: `http://localhost:${webhookPort}/hook`,
+    APCL_DEPLOYMENT_WEBHOOK_HMAC_SECRET: 'hmac-secret',
+    APCL_DEPLOYMENT_STATUS_TOKEN: 'status-secret',
+    APCL_DEPLOYMENT_POLL_ENABLED: 'true',
+    APCL_DEPLOYMENT_POLL_URL_TEMPLATE: `http://localhost:${pollPort}/runs/{runId}`,
+    APCL_DEPLOYMENT_POLL_INTERVAL_MS: '200',
+    APCL_DEPLOYMENT_POLL_MAX_ATTEMPTS: '5',
+  });
+  await app.ready();
+
+  try {
+    const created = await api(app.baseUrl, '/api/requests', {
+      method: 'POST',
+      token: 'reqtoken',
+      body: requestPayload(),
+    });
+    const reqId = created.payload.request.id;
+
+    await api(app.baseUrl, `/api/requests/${reqId}/decision`, {
+      method: 'POST',
+      token: 'proctoken',
+      body: { decision: 'approved', comment: 'ok' },
+    });
+
+    const ent = await api(app.baseUrl, `/api/requests/${reqId}/entitlement`, {
+      method: 'POST',
+      token: 'proctoken',
+      body: {},
+    });
+
+    const deploy = await api(app.baseUrl, `/api/requests/${reqId}/deploy`, {
+      method: 'POST',
+      token: 'depltoken',
+      body: { entitlementToken: ent.payload.entitlementToken },
+    });
+    assert.equal(deploy.response.status, 200);
+    assert.equal(deploy.payload.execution.status, 'succeeded');
+    assert.ok(pollCount >= 2);
+  } finally {
+    await app.stop();
+    await new Promise(resolve => webhookServer.close(resolve));
+    await new Promise(resolve => pollServer.close(resolve));
+  }
+});
+
+test('governance posture endpoint is available for security/platform roles', async () => {
+  const app = startApcl({ APCL_DEPLOYMENT_MODE: 'local' });
+  await app.ready();
+  try {
+    const unauthorized = await api(app.baseUrl, '/api/governance/posture', { token: 'reqtoken' });
+    assert.equal(unauthorized.response.status, 403);
+
+    const posture = await api(app.baseUrl, '/api/governance/posture', { token: 'pltoken' });
+    assert.equal(posture.response.status, 200);
+    assert.ok(posture.payload.posture);
+    assert.ok(Array.isArray(posture.payload.posture.checks));
+  } finally {
+    await app.stop();
+  }
+});

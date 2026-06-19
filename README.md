@@ -116,7 +116,9 @@ APCL now supports role-gated APIs using authentication modes:
 EasyAuth hardening options:
 
 - `APCL_EASYAUTH_ALLOWED_APP_IDS=<comma-separated app ids / audiences>` to reject tokens from unapproved clients.
+- `APCL_EASYAUTH_ALLOWED_TENANT_IDS=<comma-separated tenant ids>` to reject tokens from unapproved tenants.
 - `APCL_EASYAUTH_GROUP_ROLE_MAP_JSON='{"<group-id>":["requester","procurement"]}'` to map Entra groups to APCL roles.
+- `APCL_APPROVER_GROUPS_JSON='{"manager":["<group-id>"],"procurement":["<group-id>"],"finance":["<group-id>"],"platform":[]}'` to enforce approver authority by group claim (not only email).
 
 Required role families:
 
@@ -164,6 +166,11 @@ Webhook integration hardening:
   - `APCL_DEPLOYMENT_WEBHOOK_TIMEOUT_MS` (default `10000`)
   - `APCL_DEPLOYMENT_WEBHOOK_RETRY_COUNT` (default `2`)
   - `APCL_DEPLOYMENT_WEBHOOK_RETRY_DELAY_MS` (default `500`)
+- Optional external run polling:
+  - `APCL_DEPLOYMENT_POLL_ENABLED=true`
+  - `APCL_DEPLOYMENT_POLL_URL_TEMPLATE=https://orchestrator/api/runs/{runId}`
+  - `APCL_DEPLOYMENT_POLL_INTERVAL_MS` and `APCL_DEPLOYMENT_POLL_MAX_ATTEMPTS`
+  - `APCL_DEPLOYMENT_POLL_BEARER_TOKEN` (optional)
 - Deployment requests support idempotency replay using header `idempotency-key` (configurable with `APCL_DEPLOYMENT_IDEMPOTENCY_HEADER`).
 
 Governance lock-down option:
@@ -172,6 +179,13 @@ Governance lock-down option:
 - `APCL_ALLOWED_DEPLOYER_IDENTITIES=<comma-separated deployer identities>`
 
 When enabled, only listed deployer identities (or `platform` role) can call `/api/requests/{id}/deploy`.
+
+Production guardrails now enforce:
+
+1. `APCL_DEPLOYMENT_MODE=webhook`
+2. webhook signing + callback token configured
+3. deployer allowlist enabled with at least one identity
+4. EasyAuth app allowlist configured when `APCL_AUTH_MODE=easyauth`
 
 ## Validation tests
 
@@ -445,12 +459,20 @@ Use APCL as the control-plane API behind your existing front-door workflow.
 - `POST /api/requests/{id}/deploy`
 - `GET /api/deployments`
 - `POST /api/deployments/{id}/status`
+- `GET /api/governance/posture`
 - `GET /api/operations/metrics`
 - `POST /api/reconciliation/import`
 - `GET /api/reconciliation/summary`
 - `GET /api/audit`
 
 See `docs/operations.md` for payload examples and operations details.
+Incident response guide: `docs/incident-runbook.md`.
+
+Governance lockdown helper:
+
+```powershell
+./scripts/governance-lockdown-baseline.ps1 -SubscriptionId <sub-id>
+```
 
 ## Deployment options
 

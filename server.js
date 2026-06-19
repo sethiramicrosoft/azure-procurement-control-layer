@@ -29,12 +29,31 @@ const EASYAUTH_ALLOWED_APP_IDS = new Set(
     .map(v => String(v || '').trim().toLowerCase())
     .filter(Boolean)
 );
+const EASYAUTH_ALLOWED_TENANT_IDS = new Set(
+  String(process.env.APCL_EASYAUTH_ALLOWED_TENANT_IDS || '')
+    .split(',')
+    .map(v => String(v || '').trim().toLowerCase())
+    .filter(Boolean)
+);
 const EASYAUTH_GROUP_ROLE_MAP = (() => {
   try {
     const parsed = JSON.parse(process.env.APCL_EASYAUTH_GROUP_ROLE_MAP_JSON || '{}');
     return parsed && typeof parsed === 'object' ? parsed : {};
   } catch {
     return {};
+  }
+})();
+const APPROVER_GROUPS = (() => {
+  try {
+    const parsed = JSON.parse(process.env.APCL_APPROVER_GROUPS_JSON || '{}');
+    return {
+      manager: Array.isArray(parsed.manager) ? parsed.manager.map(v => String(v || '').toLowerCase()).filter(Boolean) : [],
+      procurement: Array.isArray(parsed.procurement) ? parsed.procurement.map(v => String(v || '').toLowerCase()).filter(Boolean) : [],
+      finance: Array.isArray(parsed.finance) ? parsed.finance.map(v => String(v || '').toLowerCase()).filter(Boolean) : [],
+      platform: Array.isArray(parsed.platform) ? parsed.platform.map(v => String(v || '').toLowerCase()).filter(Boolean) : [],
+    };
+  } catch {
+    return { manager: [], procurement: [], finance: [], platform: [] };
   }
 })();
 const DEPLOYMENT_WEBHOOK_TIMEOUT_MS = Math.max(1000, Number(process.env.APCL_DEPLOYMENT_WEBHOOK_TIMEOUT_MS || 10000));
@@ -48,6 +67,11 @@ const ALLOWED_DEPLOYER_IDENTITIES = new Set(
     .map(v => String(v || '').trim().toLowerCase())
     .filter(Boolean)
 );
+const DEPLOYMENT_POLL_ENABLED = String(process.env.APCL_DEPLOYMENT_POLL_ENABLED || 'false').toLowerCase() === 'true';
+const DEPLOYMENT_POLL_URL_TEMPLATE = String(process.env.APCL_DEPLOYMENT_POLL_URL_TEMPLATE || '').trim();
+const DEPLOYMENT_POLL_INTERVAL_MS = Math.max(500, Number(process.env.APCL_DEPLOYMENT_POLL_INTERVAL_MS || 2000));
+const DEPLOYMENT_POLL_MAX_ATTEMPTS = Math.max(1, Number(process.env.APCL_DEPLOYMENT_POLL_MAX_ATTEMPTS || 10));
+const DEPLOYMENT_POLL_BEARER_TOKEN = String(process.env.APCL_DEPLOYMENT_POLL_BEARER_TOKEN || '').trim();
 const STATIC_TOKEN_MAP = (() => {
   try {
     return JSON.parse(process.env.APCL_STATIC_TOKENS_JSON || '{}');
@@ -107,6 +131,7 @@ function parseMsClientPrincipal(headerValue) {
       groups: groupClaims,
       appId: claimValue('appid', 'azp') || null,
       audience: claimValue('aud') || null,
+      tenantId: claimValue('tid', 'http://schemas.microsoft.com/identity/claims/tenantid') || null,
       authSource: 'easyauth',
       principalId: claimValue('oid', 'http://schemas.microsoft.com/identity/claims/objectidentifier') || null,
     };
@@ -137,6 +162,12 @@ function getIdentity(req) {
       const audience = String(principal.audience || '').toLowerCase();
       if (!EASYAUTH_ALLOWED_APP_IDS.has(appId) && !EASYAUTH_ALLOWED_APP_IDS.has(audience)) {
         return { authenticated: false, reason: 'token audience/appid not allowed' };
+      }
+    }
+    if (EASYAUTH_ALLOWED_TENANT_IDS.size) {
+      const tenantId = String(principal.tenantId || '').toLowerCase();
+      if (!EASYAUTH_ALLOWED_TENANT_IDS.has(tenantId)) {
+        return { authenticated: false, reason: 'token tenant not allowed' };
       }
     }
     return principal;
@@ -191,6 +222,41 @@ function isAllowedDeployerIdentity(actor) {
   const candidate = normalizeEmail(actor);
   if (!candidate) return false;
   return ALLOWED_DEPLOYER_IDENTITIES.has(candidate);
+}
+
+function hasAnyGroup(identity, groups) {
+  const actorGroups = (identity.groups || []).map(v => String(v || '').toLowerCase());
+  if (!actorGroups.length || !groups || !groups.length) return false;
+  return groups.some(g => actorGroups.includes(String(g || '').toLowerCase()));
+}
+
+function hasApproverAuthority(identity, request, authorityType, state) {
+  if (isPlatformActor(identity)) return true;
+  const actor = identity.actor;
+  if (authorityType === 'procurement') {
+    return isConfiguredActor(
+      actor,
+      request.procurementApproverEmail,
+      state.config.procurementApproverEmail
+    ) || hasAnyGroup(identity, APPROVER_GROUPS.procurement);
+  }
+  if (authorityType === 'manager') {
+    return isConfiguredActor(
+      actor,
+      request.managerApproverEmail,
+      state.config.managerApproverEmail,
+      request.procurementApproverEmail,
+      state.config.procurementApproverEmail
+    ) || hasAnyGroup(identity, [...APPROVER_GROUPS.manager, ...APPROVER_GROUPS.procurement]);
+  }
+  if (authorityType === 'finance') {
+    return isConfiguredActor(
+      actor,
+      request.financeApproverEmail,
+      state.config.financeApproverEmail
+    ) || hasAnyGroup(identity, APPROVER_GROUPS.finance);
+  }
+  return false;
 }
 
 function getRequestIdempotencyKey(req) {
@@ -361,6 +427,7 @@ async function invokeDeploymentWebhookWithRetry(webhookPayload, headers) {
         const payload = await response.json().catch(() => ({}));
         return { ok: true, response, payload, attempt };
       }
+
       lastStatus = response.status;
       lastError = `webhook trigger failed (${response.status})`;
       const retryable = response.status === 429 || response.status >= 500;
@@ -382,6 +449,49 @@ async function invokeDeploymentWebhookWithRetry(webhookPayload, headers) {
     error: lastError || 'webhook trigger failed',
     attempt: maxAttempts,
   };
+}
+
+async function pollDeploymentRunStatus(externalRunId) {
+  if (!DEPLOYMENT_POLL_ENABLED || !DEPLOYMENT_POLL_URL_TEMPLATE || !externalRunId) {
+    return { status: 'queued', attempts: 0, resultMessage: 'polling not enabled' };
+  }
+
+  const pollUrl = DEPLOYMENT_POLL_URL_TEMPLATE.replace('{runId}', encodeURIComponent(String(externalRunId)));
+  const headers = DEPLOYMENT_POLL_BEARER_TOKEN
+    ? { Authorization: `Bearer ${DEPLOYMENT_POLL_BEARER_TOKEN}` }
+    : {};
+
+  for (let attempt = 1; attempt <= DEPLOYMENT_POLL_MAX_ATTEMPTS; attempt += 1) {
+    try {
+      const response = await fetch(pollUrl, {
+        method: 'GET',
+        headers,
+        signal: AbortSignal.timeout(DEPLOYMENT_WEBHOOK_TIMEOUT_MS),
+      });
+      if (!response.ok) {
+        if (attempt >= DEPLOYMENT_POLL_MAX_ATTEMPTS) {
+          return { status: 'failed', attempts: attempt, resultMessage: `poll failed (${response.status})` };
+        }
+      } else {
+        const payload = await response.json().catch(() => ({}));
+        const status = String(payload.status || '').toLowerCase();
+        const resultMessage = String(payload.resultMessage || '').trim() || null;
+        if (status === 'succeeded' || status === 'failed') {
+          return { status, attempts: attempt, resultMessage };
+        }
+        if (status && status !== 'queued' && status !== 'running') {
+          return { status: 'failed', attempts: attempt, resultMessage: `unsupported polled status: ${status}` };
+        }
+      }
+    } catch (err) {
+      if (attempt >= DEPLOYMENT_POLL_MAX_ATTEMPTS) {
+        return { status: 'failed', attempts: attempt, resultMessage: `poll failed (${err.message})` };
+      }
+    }
+    await wait(DEPLOYMENT_POLL_INTERVAL_MS);
+  }
+
+  return { status: 'queued', attempts: DEPLOYMENT_POLL_MAX_ATTEMPTS, resultMessage: 'polling window exhausted' };
 }
 
 async function triggerDeploymentExecution(state, request, assignment, body) {
@@ -438,6 +548,17 @@ async function triggerDeploymentExecution(state, request, assignment, body) {
     execution.resultMessage = webhookResult.attempt > 1
       ? `queued via webhook (after ${webhookResult.attempt} attempts)`
       : 'queued via webhook';
+
+    const polled = await pollDeploymentRunStatus(execution.externalRunId);
+    if (polled.status === 'succeeded' || polled.status === 'failed') {
+      execution.status = polled.status;
+      execution.completedAt = nowIso();
+      execution.resultMessage = polled.resultMessage
+        || `${polled.status} via webhook poll (${polled.attempts} attempts)`;
+      execution.triggerAttempts = Math.max(Number(execution.triggerAttempts || 0), Number(polled.attempts || 0));
+    } else if (polled.attempts > 0) {
+      execution.resultMessage = `${execution.resultMessage}; polling pending after ${polled.attempts} attempts`;
+    }
     return execution;
   }
 
@@ -1132,10 +1253,19 @@ function handleApi(req, res, pathname) {
         deploymentWebhookSignatureEnabled: Boolean(DEPLOYMENT_WEBHOOK_HMAC_SECRET),
         deploymentWebhookRetryCount: DEPLOYMENT_WEBHOOK_RETRY_COUNT,
         deploymentWebhookTimeoutMs: DEPLOYMENT_WEBHOOK_TIMEOUT_MS,
+        deploymentPollingEnabled: DEPLOYMENT_POLL_ENABLED,
+        deploymentPollingMaxAttempts: DEPLOYMENT_POLL_MAX_ATTEMPTS,
         enforceDeployerAllowlist: ENFORCE_DEPLOYER_ALLOWLIST,
         allowedDeployerIdentityCount: ALLOWED_DEPLOYER_IDENTITIES.size,
         easyauthAllowedAppIdsConfigured: EASYAUTH_ALLOWED_APP_IDS.size,
+        easyauthAllowedTenantIdsConfigured: EASYAUTH_ALLOWED_TENANT_IDS.size,
         easyauthGroupRoleMappings: Object.keys(EASYAUTH_GROUP_ROLE_MAP || {}).length,
+        approverGroupBindings: {
+          manager: APPROVER_GROUPS.manager.length,
+          procurement: APPROVER_GROUPS.procurement.length,
+          finance: APPROVER_GROUPS.finance.length,
+          platform: APPROVER_GROUPS.platform.length,
+        },
       },
       tenants: state.tenants,
       assignments: {
@@ -1154,6 +1284,62 @@ function handleApi(req, res, pathname) {
 
   if (req.method === 'GET' && pathname === '/api/deployments') {
     return send(res, 200, { deployments: state.deploymentExecutions });
+  }
+
+  if (req.method === 'GET' && pathname === '/api/governance/posture') {
+    if (!requireRoles(['security', 'platform'])) return;
+    const checks = [
+      {
+        id: 'deployment_webhook_signature',
+        required: true,
+        passed: DEPLOYMENT_MODE !== 'webhook' || Boolean(DEPLOYMENT_WEBHOOK_HMAC_SECRET),
+        detail: DEPLOYMENT_MODE === 'webhook'
+          ? 'Webhook HMAC secret configured for deployment trigger signing.'
+          : 'Not applicable outside webhook deployment mode.',
+      },
+      {
+        id: 'deployment_status_token',
+        required: true,
+        passed: DEPLOYMENT_MODE !== 'webhook' || Boolean(DEPLOYMENT_STATUS_TOKEN),
+        detail: DEPLOYMENT_MODE === 'webhook'
+          ? 'Deployment status callback token configured.'
+          : 'Not applicable outside webhook deployment mode.',
+      },
+      {
+        id: 'deployer_allowlist',
+        required: true,
+        passed: !ENFORCE_DEPLOYER_ALLOWLIST || ALLOWED_DEPLOYER_IDENTITIES.size > 0,
+        detail: ENFORCE_DEPLOYER_ALLOWLIST
+          ? `Deployer allowlist enabled with ${ALLOWED_DEPLOYER_IDENTITIES.size} identities.`
+          : 'Deployer allowlist disabled.',
+      },
+      {
+        id: 'easyauth_app_allowlist',
+        required: AUTH_MODE === 'easyauth',
+        passed: AUTH_MODE !== 'easyauth' || EASYAUTH_ALLOWED_APP_IDS.size > 0,
+        detail: AUTH_MODE === 'easyauth'
+          ? `EasyAuth app allowlist entries: ${EASYAUTH_ALLOWED_APP_IDS.size}.`
+          : 'Not applicable outside EasyAuth mode.',
+      },
+      {
+        id: 'audit_export',
+        required: true,
+        passed: Boolean(AUDIT_EXPORT_PATH),
+        detail: AUDIT_EXPORT_PATH
+          ? `Audit export configured at ${AUDIT_EXPORT_PATH}.`
+          : 'Audit export path is not configured.',
+      },
+    ];
+    const passed = checks.filter(c => c.passed).length;
+    return send(res, 200, {
+      posture: {
+        generatedAt: nowIso(),
+        passed,
+        total: checks.length,
+        compliant: passed === checks.length,
+        checks,
+      },
+    });
   }
 
   if (req.method === 'GET' && pathname === '/api/operations/metrics') {
@@ -1327,25 +1513,13 @@ function handleApi(req, res, pathname) {
           if (!['approved', 'rejected'].includes(decision)) {
             return send(res, 400, { error: 'decision must be approved or rejected' });
           }
-          if (!isPlatformActor(identity)) {
-            const isApprovalAuthority = isConfiguredActor(
-              approver,
-              request.procurementApproverEmail,
-              state.config.procurementApproverEmail
-            );
-            const isRejectionAuthority = isConfiguredActor(
-              approver,
-              request.managerApproverEmail,
-              state.config.managerApproverEmail,
-              request.procurementApproverEmail,
-              state.config.procurementApproverEmail
-            );
-            if (decision === 'approved' && !isApprovalAuthority) {
-              return send(res, 403, { error: 'approver not authorized for approval decision' });
-            }
-            if (decision === 'rejected' && !isRejectionAuthority) {
-              return send(res, 403, { error: 'approver not authorized for rejection decision' });
-            }
+          const isApprovalAuthority = hasApproverAuthority(identity, request, 'procurement', state);
+          const isRejectionAuthority = hasApproverAuthority(identity, request, 'manager', state);
+          if (decision === 'approved' && !isApprovalAuthority) {
+            return send(res, 403, { error: 'approver not authorized for approval decision' });
+          }
+          if (decision === 'rejected' && !isRejectionAuthority) {
+            return send(res, 403, { error: 'approver not authorized for rejection decision' });
           }
           request.approvals.push({
             step: request.approvals.length + 1,
@@ -1503,15 +1677,8 @@ function handleApi(req, res, pathname) {
             return send(res, 409, { error: 'request must be approved or have an active exception before entitlement issuance' });
           }
           const issuedBy = identity.actor;
-          if (!isPlatformActor(identity)) {
-            const procurementAuthority = isConfiguredActor(
-              issuedBy,
-              request.procurementApproverEmail,
-              state.config.procurementApproverEmail
-            );
-            if (!procurementAuthority) {
-              return send(res, 403, { error: 'actor not authorized to issue entitlement for this request' });
-            }
+          if (!hasApproverAuthority(identity, request, 'procurement', state)) {
+            return send(res, 403, { error: 'actor not authorized to issue entitlement for this request' });
           }
           const issued = issueEntitlementForRequest(request, issuedBy);
           request.entitlements = request.entitlements || [];
@@ -1542,15 +1709,8 @@ function handleApi(req, res, pathname) {
       return readJson(req)
         .then(body => {
           const actor = identity.actor;
-          if (!isPlatformActor(identity)) {
-            const procurementAuthority = isConfiguredActor(
-              actor,
-              request.procurementApproverEmail,
-              state.config.procurementApproverEmail
-            );
-            if (!procurementAuthority) {
-              return send(res, 403, { error: 'actor not authorized to assign this request' });
-            }
+          if (!hasApproverAuthority(identity, request, 'procurement', state)) {
+            return send(res, 403, { error: 'actor not authorized to assign this request' });
           }
           const assigned = ensureAssignmentAndBudget(state, request, actor);
           request.updatedAt = nowIso();
@@ -1629,15 +1789,8 @@ function handleApi(req, res, pathname) {
           if (!['approved', 'rejected'].includes(decision)) {
             return send(res, 400, { error: 'decision must be approved or rejected' });
           }
-          if (!isPlatformActor(identity)) {
-            const procurementAuthority = isConfiguredActor(
-              approver,
-              request.procurementApproverEmail,
-              state.config.procurementApproverEmail
-            );
-            if (!procurementAuthority) {
-              return send(res, 403, { error: 'approver not authorized for exception decision' });
-            }
+          if (!hasApproverAuthority(identity, request, 'procurement', state)) {
+            return send(res, 403, { error: 'approver not authorized for exception decision' });
           }
           const exception = (request.exceptions || []).find(e => e.id === exceptionId || e.number === exceptionId);
           if (!exception) {
@@ -1848,14 +2001,23 @@ if (process.env.NODE_ENV === 'production') {
   if (AUTH_MODE === 'none') {
     throw new Error('APCL_AUTH_MODE=none is not allowed in production.');
   }
+  if (DEPLOYMENT_MODE !== 'webhook') {
+    throw new Error('APCL_DEPLOYMENT_MODE=webhook is required in production.');
+  }
   if (DEPLOYMENT_MODE === 'webhook' && !DEPLOYMENT_WEBHOOK_HMAC_SECRET) {
     throw new Error('APCL_DEPLOYMENT_WEBHOOK_HMAC_SECRET must be configured in production webhook mode.');
   }
   if (DEPLOYMENT_MODE === 'webhook' && !DEPLOYMENT_STATUS_TOKEN) {
     throw new Error('APCL_DEPLOYMENT_STATUS_TOKEN must be configured in production webhook mode.');
   }
-  if (ENFORCE_DEPLOYER_ALLOWLIST && !ALLOWED_DEPLOYER_IDENTITIES.size) {
+  if (!ENFORCE_DEPLOYER_ALLOWLIST) {
+    throw new Error('APCL_ENFORCE_DEPLOYER_ALLOWLIST=true is required in production.');
+  }
+  if (!ALLOWED_DEPLOYER_IDENTITIES.size) {
     throw new Error('APCL_ALLOWED_DEPLOYER_IDENTITIES must contain at least one identity when allowlist enforcement is enabled.');
+  }
+  if (AUTH_MODE === 'easyauth' && !EASYAUTH_ALLOWED_APP_IDS.size) {
+    throw new Error('APCL_EASYAUTH_ALLOWED_APP_IDS must be configured in production EasyAuth mode.');
   }
 }
 

@@ -195,6 +195,26 @@ resource containerApp 'Microsoft.App/containerApps@2024-03-01' = {
               value: '500'
             }
             {
+              name: 'APCL_DEPLOYMENT_POLL_ENABLED'
+              value: 'false'
+            }
+            {
+              name: 'APCL_DEPLOYMENT_POLL_URL_TEMPLATE'
+              value: ''
+            }
+            {
+              name: 'APCL_DEPLOYMENT_POLL_INTERVAL_MS'
+              value: '2000'
+            }
+            {
+              name: 'APCL_DEPLOYMENT_POLL_MAX_ATTEMPTS'
+              value: '10'
+            }
+            {
+              name: 'APCL_DEPLOYMENT_POLL_BEARER_TOKEN'
+              value: ''
+            }
+            {
               name: 'APCL_ENFORCE_DEPLOYER_ALLOWLIST'
               value: 'false'
             }
@@ -211,8 +231,16 @@ resource containerApp 'Microsoft.App/containerApps@2024-03-01' = {
               value: ''
             }
             {
+              name: 'APCL_EASYAUTH_ALLOWED_TENANT_IDS'
+              value: ''
+            }
+            {
               name: 'APCL_EASYAUTH_GROUP_ROLE_MAP_JSON'
               value: '{}'
+            }
+            {
+              name: 'APCL_APPROVER_GROUPS_JSON'
+              value: '{"manager":[],"procurement":[],"finance":[],"platform":[]}'
             }
           ]
         }
