@@ -123,6 +123,12 @@ Required role families:
 
 `APCL_AUTH_MODE=none` and default entitlement secret are blocked when `NODE_ENV=production`.
 
+Approval authority enforcement:
+
+- Approval decisions require the configured procurement approver identity (unless `platform` role).
+- Exception decisions, assignment, and entitlement issuance require procurement approver authority (unless `platform` role).
+- Requester-initiated exception requests are constrained to the request owner identity.
+
 ### Durable state and audit export
 
 APCL supports pluggable state backends:
@@ -155,6 +161,11 @@ Run automated smoke/regression checks:
 ```powershell
 npm test
 ```
+
+CI pipeline (`.github/workflows/ci.yml`) runs:
+
+1. `node --check server.js`
+2. `npm test`
 
 ## Why APCL exists
 

@@ -131,6 +131,20 @@ function hasRequiredRole(identity, requiredRoles) {
   return requiredRoles.some(role => userRoles.includes(String(role).toLowerCase()));
 }
 
+function normalizeEmail(value) {
+  return String(value || '').trim().toLowerCase();
+}
+
+function isPlatformActor(identity) {
+  return hasRequiredRole(identity, ['platform']);
+}
+
+function isConfiguredActor(actor, ...allowedEmails) {
+  const candidate = normalizeEmail(actor);
+  if (!candidate) return false;
+  return allowedEmails.map(normalizeEmail).filter(Boolean).includes(candidate);
+}
+
 function timingSafeEquals(a, b) {
   const left = Buffer.from(String(a || ''));
   const right = Buffer.from(String(b || ''));
@@ -1100,6 +1114,26 @@ function handleApi(req, res, pathname) {
           if (!['approved', 'rejected'].includes(decision)) {
             return send(res, 400, { error: 'decision must be approved or rejected' });
           }
+          if (!isPlatformActor(identity)) {
+            const isApprovalAuthority = isConfiguredActor(
+              approver,
+              request.procurementApproverEmail,
+              state.config.procurementApproverEmail
+            );
+            const isRejectionAuthority = isConfiguredActor(
+              approver,
+              request.managerApproverEmail,
+              state.config.managerApproverEmail,
+              request.procurementApproverEmail,
+              state.config.procurementApproverEmail
+            );
+            if (decision === 'approved' && !isApprovalAuthority) {
+              return send(res, 403, { error: 'approver not authorized for approval decision' });
+            }
+            if (decision === 'rejected' && !isRejectionAuthority) {
+              return send(res, 403, { error: 'approver not authorized for rejection decision' });
+            }
+          }
           request.approvals.push({
             step: request.approvals.length + 1,
             approver,
@@ -1231,6 +1265,16 @@ function handleApi(req, res, pathname) {
             return send(res, 409, { error: 'request must be approved or have an active exception before entitlement issuance' });
           }
           const issuedBy = identity.actor;
+          if (!isPlatformActor(identity)) {
+            const procurementAuthority = isConfiguredActor(
+              issuedBy,
+              request.procurementApproverEmail,
+              state.config.procurementApproverEmail
+            );
+            if (!procurementAuthority) {
+              return send(res, 403, { error: 'actor not authorized to issue entitlement for this request' });
+            }
+          }
           const issued = issueEntitlementForRequest(request, issuedBy);
           request.entitlements = request.entitlements || [];
           request.entitlements.push(issued.record);
@@ -1260,6 +1304,16 @@ function handleApi(req, res, pathname) {
       return readJson(req)
         .then(body => {
           const actor = identity.actor;
+          if (!isPlatformActor(identity)) {
+            const procurementAuthority = isConfiguredActor(
+              actor,
+              request.procurementApproverEmail,
+              state.config.procurementApproverEmail
+            );
+            if (!procurementAuthority) {
+              return send(res, 403, { error: 'actor not authorized to assign this request' });
+            }
+          }
           const assigned = ensureAssignmentAndBudget(state, request, actor);
           request.updatedAt = nowIso();
           appendAuditEvent(state, {
@@ -1279,6 +1333,11 @@ function handleApi(req, res, pathname) {
       return readJson(req)
         .then(body => {
           const requestedBy = identity.actor;
+          if (!isPlatformActor(identity) && !hasRequiredRole(identity, ['procurement'])) {
+            if (!isConfiguredActor(requestedBy, request.requester)) {
+              return send(res, 403, { error: 'actor not authorized to request exception for this request' });
+            }
+          }
           const reason = String(body.reason || '').trim();
           const durationHours = Number(body.durationHours || state.config.defaultExceptionDurationHours || 24);
           if (!reason) {
@@ -1331,6 +1390,16 @@ function handleApi(req, res, pathname) {
           }
           if (!['approved', 'rejected'].includes(decision)) {
             return send(res, 400, { error: 'decision must be approved or rejected' });
+          }
+          if (!isPlatformActor(identity)) {
+            const procurementAuthority = isConfiguredActor(
+              approver,
+              request.procurementApproverEmail,
+              state.config.procurementApproverEmail
+            );
+            if (!procurementAuthority) {
+              return send(res, 403, { error: 'approver not authorized for exception decision' });
+            }
           }
           const exception = (request.exceptions || []).find(e => e.id === exceptionId || e.number === exceptionId);
           if (!exception) {

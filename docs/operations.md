@@ -86,6 +86,12 @@ In production:
 - default entitlement secret is blocked.
 - webhook callback can be secured with `APCL_DEPLOYMENT_STATUS_TOKEN` (`x-apcl-status-token` header).
 
+Authority checks:
+
+- Request approval requires configured procurement approver identity (or platform role).
+- Exception decision / entitlement issuance / assignment require configured procurement approver identity (or platform role).
+- Requester exception submission is limited to the originating requester identity (unless procurement/platform role).
+
 ## State backend and audit export
 
 Runtime options:
@@ -114,6 +120,8 @@ Webhook signing:
 ```powershell
 npm test
 ```
+
+CI workflow: `.github/workflows/ci.yml` (push + PR).
 
 ## Direct Azure deployment (Azure Container Apps)
 

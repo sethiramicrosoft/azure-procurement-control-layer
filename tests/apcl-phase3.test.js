@@ -20,6 +20,7 @@ function createStaticTokens() {
   return JSON.stringify({
     reqtoken: { actor: 'requester@contoso.com', roles: ['requester'] },
     proctoken: { actor: 'procurement@contoso.com', roles: ['procurement'] },
+    rogueproctoken: { actor: 'rogue-procurement@contoso.com', roles: ['procurement'] },
     depltoken: { actor: 'deployer@contoso.com', roles: ['deployer'] },
     pltoken: { actor: 'platform@contoso.com', roles: ['platform'] },
   });
@@ -186,6 +187,40 @@ test('webhook signing + callback status token flow', async () => {
     let body = '';
     req.on('data', chunk => {
       body += chunk;
+    });
+
+    test('approval authority is enforced for procurement actions', async () => {
+      const app = startApcl({ APCL_DEPLOYMENT_MODE: 'local' });
+      await app.ready();
+      try {
+        const created = await api(app.baseUrl, '/api/requests', {
+          method: 'POST',
+          token: 'reqtoken',
+          body: {
+            ...requestPayload(),
+            procurementApproverEmail: 'procurement@contoso.com',
+          },
+        });
+        assert.equal(created.response.status, 201);
+        const reqId = created.payload.request.id;
+
+        const unauthorizedDecision = await api(app.baseUrl, `/api/requests/${reqId}/decision`, {
+          method: 'POST',
+          token: 'rogueproctoken',
+          body: { decision: 'approved', comment: 'try approve' },
+        });
+        assert.equal(unauthorizedDecision.response.status, 403);
+        assert.match(String(unauthorizedDecision.payload.error || ''), /not authorized/i);
+
+        const authorizedDecision = await api(app.baseUrl, `/api/requests/${reqId}/decision`, {
+          method: 'POST',
+          token: 'proctoken',
+          body: { decision: 'approved', comment: 'approved' },
+        });
+        assert.equal(authorizedDecision.response.status, 200);
+      } finally {
+        await app.stop();
+      }
     });
     req.on('end', () => {
       webhookRequest = {
