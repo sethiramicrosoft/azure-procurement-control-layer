@@ -142,8 +142,11 @@ When SQLite backend is enabled, state writes use version-checked updates to redu
 Production startup guardrails also require:
 
 1. `APCL_EASYAUTH_ALLOWED_TENANT_IDS` configured
-2. non-`/tmp` state/audit paths
-3. `APCL_AUDIT_EXPORT_SECRET` configured
+2. state backend as either:
+   - `APCL_STATE_BACKEND=managed` with `APCL_MANAGED_STATE_ADAPTER_PATH`, or
+   - `APCL_STATE_BACKEND=sqlite` with persistent non-`/tmp` `APCL_SQLITE_DB_PATH`
+3. non-`/tmp` audit path
+4. `APCL_AUDIT_EXPORT_SECRET` configured
 
 Webhook signing:
 

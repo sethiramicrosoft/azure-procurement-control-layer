@@ -1113,14 +1113,16 @@ function getProductionReadinessIssues() {
   if (!ALLOWED_DEPLOYER_IDENTITIES.size) {
     issues.push('APCL_ALLOWED_DEPLOYER_IDENTITIES must include at least one identity in production.');
   }
-  if (STATE_BACKEND !== 'managed') {
-    issues.push('APCL_STATE_BACKEND must be managed in production.');
+  const sqlitePersistent = STATE_BACKEND === 'sqlite' && !hasUnsafeProductionPath(SQLITE_DB_FILE);
+  const managedConfigured = STATE_BACKEND === 'managed' && Boolean(MANAGED_STATE_ADAPTER_PATH);
+  if (!sqlitePersistent && !managedConfigured) {
+    issues.push('Production state backend must be either managed (with APCL_MANAGED_STATE_ADAPTER_PATH) or sqlite with persistent non-/tmp APCL_SQLITE_DB_PATH.');
   }
-  if (!MANAGED_STATE_ADAPTER_PATH) {
-    issues.push('APCL_MANAGED_STATE_ADAPTER_PATH must be configured when using managed backend.');
+  if (STATE_BACKEND === 'managed' && !MANAGED_STATE_ADAPTER_PATH) {
+    issues.push('APCL_MANAGED_STATE_ADAPTER_PATH must be configured when APCL_STATE_BACKEND=managed.');
   }
   if (STATE_BACKEND === 'sqlite' && hasUnsafeProductionPath(SQLITE_DB_FILE)) {
-    issues.push('APCL_SQLITE_DB_PATH must be a persistent non-/tmp path in production.');
+    issues.push('APCL_SQLITE_DB_PATH must be a persistent non-/tmp path when APCL_STATE_BACKEND=sqlite in production.');
   }
   if (!AUDIT_EXPORT_PATH) {
     issues.push('APCL_AUDIT_EXPORT_PATH must be configured in production.');

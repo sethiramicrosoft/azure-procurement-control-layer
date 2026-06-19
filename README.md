@@ -196,8 +196,11 @@ Production guardrails now enforce:
 3. deployer allowlist enabled with at least one identity
 4. EasyAuth app allowlist configured when `APCL_AUTH_MODE=easyauth`
 5. EasyAuth tenant allowlist configured
-6. persistent non-`/tmp` paths for state and audit export
-7. audit export secret configured
+6. state backend must be either:
+   - `managed` with `APCL_MANAGED_STATE_ADAPTER_PATH`, or
+   - `sqlite` with persistent non-`/tmp` `APCL_SQLITE_DB_PATH` (for Azure Files-backed deployment mode)
+7. persistent non-`/tmp` audit export path
+8. audit export secret configured
 
 ## Validation tests
 
