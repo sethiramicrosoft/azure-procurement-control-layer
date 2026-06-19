@@ -24,6 +24,12 @@ param(
   [string]$KeyVaultName = 'kv-apcl-prod-001',
 
   [Parameter(Mandatory = $false)]
+  [string]$StateStorageAccountName = '',
+
+  [Parameter(Mandatory = $false)]
+  [string]$StateFileShareName = 'apclstate',
+
+  [Parameter(Mandatory = $false)]
   [string]$EntitlementSecretName = 'apcl-entitlement-secret',
 
   [Parameter(Mandatory = $false)]
@@ -60,6 +66,11 @@ if (-not $EntitlementSecretValue) {
   $EntitlementSecretValue = New-RandomSecret
 }
 
+if (-not $StateStorageAccountName) {
+  $rand = -join ((97..122) + (48..57) | Get-Random -Count 8 | ForEach-Object { [char]$_ })
+  $StateStorageAccountName = ("apclst$rand").ToLower()
+}
+
 if (-not (Test-Path $templateFile)) {
   throw "Template file not found: $templateFile"
 }
@@ -82,6 +93,8 @@ $outputsJson = az deployment group create `
     containerAppName=$ContainerAppName `
     containerRegistryName=$ContainerRegistryName `
     keyVaultName=$KeyVaultName `
+    stateStorageAccountName=$StateStorageAccountName `
+    stateFileShareName=$StateFileShareName `
     entitlementSecretName=$EntitlementSecretName `
     entitlementSecretValue="$EntitlementSecretValue" `
   --query properties.outputs `
@@ -95,6 +108,8 @@ Write-Host "Container App URL: https://$($outputs.containerAppFqdn.value)"
 Write-Host "Container Registry: $($outputs.containerRegistryLoginServer.value)"
 Write-Host "Key Vault: $($outputs.keyVaultNameOut.value)"
 Write-Host "Secret URI: $($outputs.entitlementSecretUri.value)"
+Write-Host "State Storage Account: $($outputs.stateStorageAccountOut.value)"
+Write-Host "State File Share: $($outputs.stateFileShareOut.value)"
 Write-Host "Secret value was generated/set but is intentionally not printed." -ForegroundColor Yellow
 
 if ($ConfigureContainerAppAuth) {

@@ -24,7 +24,7 @@ jobs:
         run: node --check server.js
 
       - name: Run automated tests
-        run: npm test
+        run: npm run test:ci
 
       - name: Validate Bicep compile
         run: az bicep build --file infra/platform/main.bicep

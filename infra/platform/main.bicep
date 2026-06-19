@@ -18,6 +18,12 @@ param containerRegistryName string
 @description('Key Vault name (globally unique).')
 param keyVaultName string
 
+@description('Storage account name for APCL state/audit volume (globally unique, lowercase, 3-24 chars).')
+param stateStorageAccountName string
+
+@description('Azure Files share name mounted into Container App for APCL state.')
+param stateFileShareName string = 'apclstate'
+
 @description('Secret name in Key Vault used by APCL entitlement signing.')
 param entitlementSecretName string = 'apcl-entitlement-secret'
 
@@ -81,6 +87,35 @@ resource keyVault 'Microsoft.KeyVault/vaults@2023-07-01' = {
   }
 }
 
+resource stateStorageAccount 'Microsoft.Storage/storageAccounts@2023-05-01' = {
+  name: stateStorageAccountName
+  location: location
+  sku: {
+    name: 'Standard_LRS'
+  }
+  kind: 'StorageV2'
+  properties: {
+    minimumTlsVersion: 'TLS1_2'
+    allowBlobPublicAccess: false
+    supportsHttpsTrafficOnly: true
+    publicNetworkAccess: 'Enabled'
+  }
+}
+
+resource stateFileService 'Microsoft.Storage/storageAccounts/fileServices@2023-05-01' = {
+  parent: stateStorageAccount
+  name: 'default'
+}
+
+resource stateFileShare 'Microsoft.Storage/storageAccounts/fileServices/shares@2023-05-01' = {
+  parent: stateFileService
+  name: stateFileShareName
+  properties: {
+    accessTier: 'TransactionOptimized'
+    enabledProtocols: 'SMB'
+  }
+}
+
 resource entitlementSecret 'Microsoft.KeyVault/vaults/secrets@2023-07-01' = {
   parent: keyVault
   name: entitlementSecretName
@@ -97,8 +132,21 @@ resource containerAppsEnvironment 'Microsoft.App/managedEnvironments@2024-03-01'
       destination: 'log-analytics'
       logAnalyticsConfiguration: {
         customerId: logAnalytics.properties.customerId
-        sharedKey: listKeys(logAnalytics.id, logAnalytics.apiVersion).primarySharedKey
+        sharedKey: logAnalytics.listKeys().primarySharedKey
       }
+    }
+  }
+}
+
+resource environmentStorage 'Microsoft.App/managedEnvironments/storages@2024-03-01' = {
+  parent: containerAppsEnvironment
+  name: 'apclstate'
+  properties: {
+    azureFile: {
+      accountName: stateStorageAccount.name
+      accountKey: stateStorageAccount.listKeys().keys[0].value
+      shareName: stateFileShare.name
+      accessMode: 'ReadWrite'
     }
   }
 }
@@ -141,6 +189,12 @@ resource containerApp 'Microsoft.App/containerApps@2024-03-01' = {
             cpu: json('0.5')
             memory: '1Gi'
           }
+          volumeMounts: [
+            {
+              volumeName: 'apcl-state'
+              mountPath: '/var/lib/apcl'
+            }
+          ]
           env: [
             {
               name: 'PORT'
@@ -249,6 +303,13 @@ resource containerApp 'Microsoft.App/containerApps@2024-03-01' = {
         minReplicas: 1
         maxReplicas: 3
       }
+      volumes: [
+        {
+          name: 'apcl-state'
+          storageType: 'AzureFile'
+          storageName: 'apclstate'
+        }
+      ]
     }
   }
 }
@@ -279,3 +340,5 @@ output containerAppFqdn string = containerApp.properties.configuration.ingress.f
 output containerRegistryLoginServer string = containerRegistry.properties.loginServer
 output keyVaultNameOut string = keyVault.name
 output entitlementSecretUri string = entitlementSecret.properties.secretUriWithVersion
+output stateStorageAccountOut string = stateStorageAccount.name
+output stateFileShareOut string = stateFileShare.name

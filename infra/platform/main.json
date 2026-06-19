@@ -5,7 +5,7 @@
     "_generator": {
       "name": "bicep",
       "version": "0.44.1.10279",
-      "templateHash": "4208544591765782584"
+      "templateHash": "8316729368959607294"
     }
   },
   "parameters": {
@@ -44,6 +44,19 @@
       "type": "string",
       "metadata": {
         "description": "Key Vault name (globally unique)."
+      }
+    },
+    "stateStorageAccountName": {
+      "type": "string",
+      "metadata": {
+        "description": "Storage account name for APCL state/audit volume (globally unique, lowercase, 3-24 chars)."
+      }
+    },
+    "stateFileShareName": {
+      "type": "string",
+      "defaultValue": "apclstate",
+      "metadata": {
+        "description": "Azure Files share name mounted into Container App for APCL state."
       }
     },
     "entitlementSecretName": {
@@ -134,6 +147,42 @@
       }
     },
     {
+      "type": "Microsoft.Storage/storageAccounts",
+      "apiVersion": "2023-05-01",
+      "name": "[parameters('stateStorageAccountName')]",
+      "location": "[parameters('location')]",
+      "sku": {
+        "name": "Standard_LRS"
+      },
+      "kind": "StorageV2",
+      "properties": {
+        "minimumTlsVersion": "TLS1_2",
+        "allowBlobPublicAccess": false,
+        "supportsHttpsTrafficOnly": true,
+        "publicNetworkAccess": "Enabled"
+      }
+    },
+    {
+      "type": "Microsoft.Storage/storageAccounts/fileServices",
+      "apiVersion": "2023-05-01",
+      "name": "[format('{0}/{1}', parameters('stateStorageAccountName'), 'default')]",
+      "dependsOn": [
+        "[resourceId('Microsoft.Storage/storageAccounts', parameters('stateStorageAccountName'))]"
+      ]
+    },
+    {
+      "type": "Microsoft.Storage/storageAccounts/fileServices/shares",
+      "apiVersion": "2023-05-01",
+      "name": "[format('{0}/{1}/{2}', parameters('stateStorageAccountName'), 'default', parameters('stateFileShareName'))]",
+      "properties": {
+        "accessTier": "TransactionOptimized",
+        "enabledProtocols": "SMB"
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Storage/storageAccounts/fileServices', parameters('stateStorageAccountName'), 'default')]"
+      ]
+    },
+    {
       "type": "Microsoft.KeyVault/vaults/secrets",
       "apiVersion": "2023-07-01",
       "name": "[format('{0}/{1}', parameters('keyVaultName'), parameters('entitlementSecretName'))]",
@@ -160,6 +209,24 @@
       },
       "dependsOn": [
         "[resourceId('Microsoft.OperationalInsights/workspaces', parameters('logAnalyticsWorkspaceName'))]"
+      ]
+    },
+    {
+      "type": "Microsoft.App/managedEnvironments/storages",
+      "apiVersion": "2024-03-01",
+      "name": "[format('{0}/{1}', parameters('containerAppEnvironmentName'), 'apclstate')]",
+      "properties": {
+        "azureFile": {
+          "accountName": "[parameters('stateStorageAccountName')]",
+          "accountKey": "[listKeys(resourceId('Microsoft.Storage/storageAccounts', parameters('stateStorageAccountName')), '2023-05-01').keys[0].value]",
+          "shareName": "[parameters('stateFileShareName')]",
+          "accessMode": "ReadWrite"
+        }
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.App/managedEnvironments', parameters('containerAppEnvironmentName'))]",
+        "[resourceId('Microsoft.Storage/storageAccounts/fileServices/shares', parameters('stateStorageAccountName'), 'default', parameters('stateFileShareName'))]",
+        "[resourceId('Microsoft.Storage/storageAccounts', parameters('stateStorageAccountName'))]"
       ]
     },
     {
@@ -202,6 +269,12 @@
                 "cpu": "[json('0.5')]",
                 "memory": "1Gi"
               },
+              "volumeMounts": [
+                {
+                  "volumeName": "apcl-state",
+                  "mountPath": "/var/lib/apcl"
+                }
+              ],
               "env": [
                 {
                   "name": "PORT",
@@ -309,7 +382,14 @@
           "scale": {
             "minReplicas": 1,
             "maxReplicas": 3
-          }
+          },
+          "volumes": [
+            {
+              "name": "apcl-state",
+              "storageType": "AzureFile",
+              "storageName": "apclstate"
+            }
+          ]
         }
       },
       "dependsOn": [
@@ -373,6 +453,14 @@
     "entitlementSecretUri": {
       "type": "string",
       "value": "[reference(resourceId('Microsoft.KeyVault/vaults/secrets', parameters('keyVaultName'), parameters('entitlementSecretName')), '2023-07-01').secretUriWithVersion]"
+    },
+    "stateStorageAccountOut": {
+      "type": "string",
+      "value": "[parameters('stateStorageAccountName')]"
+    },
+    "stateFileShareOut": {
+      "type": "string",
+      "value": "[parameters('stateFileShareName')]"
     }
   }
 }

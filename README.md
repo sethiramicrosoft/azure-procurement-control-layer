@@ -66,13 +66,13 @@ This path provisions APCL runtime infrastructure in Azure and deploys the applic
 Using Bicep (default):
 
 ```powershell
-./scripts/deploy-platform.ps1 -SubscriptionId <sub-id> -ResourceGroupName rg-apcl-platform-prod -Location australiaeast -ContainerAppName aca-apcl-prod -ContainerAppEnvironmentName cae-apcl-prod -LogAnalyticsWorkspaceName law-apcl-prod -ContainerRegistryName <globally-unique-acr-name> -KeyVaultName <globally-unique-kv-name> -EasyAuthTenantId <tenant-id> -EasyAuthClientId <app-client-id> -EasyAuthClientSecret "<app-client-secret>"
+./scripts/deploy-platform.ps1 -SubscriptionId <sub-id> -ResourceGroupName rg-apcl-platform-prod -Location australiaeast -ContainerAppName aca-apcl-prod -ContainerAppEnvironmentName cae-apcl-prod -LogAnalyticsWorkspaceName law-apcl-prod -ContainerRegistryName <globally-unique-acr-name> -KeyVaultName <globally-unique-kv-name> -StateStorageAccountName <globally-unique-storage-name> -StateFileShareName apclstate -EasyAuthTenantId <tenant-id> -EasyAuthClientId <app-client-id> -EasyAuthClientSecret "<app-client-secret>"
 ```
 
 Using ARM template output:
 
 ```powershell
-./scripts/deploy-platform.ps1 -SubscriptionId <sub-id> -ResourceGroupName rg-apcl-platform-prod -Location australiaeast -ContainerAppName aca-apcl-prod -ContainerAppEnvironmentName cae-apcl-prod -LogAnalyticsWorkspaceName law-apcl-prod -ContainerRegistryName <globally-unique-acr-name> -KeyVaultName <globally-unique-kv-name> -TemplateType ARM -EasyAuthTenantId <tenant-id> -EasyAuthClientId <app-client-id> -EasyAuthClientSecret "<app-client-secret>"
+./scripts/deploy-platform.ps1 -SubscriptionId <sub-id> -ResourceGroupName rg-apcl-platform-prod -Location australiaeast -ContainerAppName aca-apcl-prod -ContainerAppEnvironmentName cae-apcl-prod -LogAnalyticsWorkspaceName law-apcl-prod -ContainerRegistryName <globally-unique-acr-name> -KeyVaultName <globally-unique-kv-name> -StateStorageAccountName <globally-unique-storage-name> -StateFileShareName apclstate -TemplateType ARM -EasyAuthTenantId <tenant-id> -EasyAuthClientId <app-client-id> -EasyAuthClientSecret "<app-client-secret>"
 ```
 
 `deploy-platform.ps1` now configures the Container Apps auth provider boundary (not just app env vars) by default:
@@ -149,10 +149,12 @@ APCL supports pluggable state backends:
 
 - `APCL_STATE_BACKEND=file` (default demo mode)
 - `APCL_STATE_BACKEND=sqlite` (transactional snapshot persistence with optimistic write conflict checks)
+- `APCL_STATE_BACKEND=managed` (adapter interface for managed datastore integration)
 
 SQLite path can be configured with:
 
 - `APCL_SQLITE_DB_PATH=<path-to-apcl.db>`
+- `APCL_MANAGED_STATE_ADAPTER_PATH=<absolute path to managed state adapter module>` (required when backend is `managed`)
 
 For append-only external audit stream export:
 

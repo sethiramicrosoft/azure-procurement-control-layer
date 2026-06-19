@@ -111,10 +111,12 @@ Runtime options:
 
 1. `APCL_STATE_BACKEND=file` (default demo mode).
 2. `APCL_STATE_BACKEND=sqlite` (recommended for hardened runtime in this repository).
+3. `APCL_STATE_BACKEND=managed` (recommended production integration mode via adapter).
 
 Optional settings:
 
 - `APCL_SQLITE_DB_PATH=<path-to-apcl.db>`
+- `APCL_MANAGED_STATE_ADAPTER_PATH=<absolute path to adapter module>`
 - `APCL_AUDIT_EXPORT_PATH=<path-to-audit-export.jsonl>`
 - `APCL_AUDIT_EXPORT_SECRET=<hmac-signing-secret>`
 - `APCL_DEPLOYMENT_WEBHOOK_HMAC_SECRET=<shared-secret>`
@@ -169,7 +171,7 @@ Security workflow: `.github/workflows/security.yml` (CodeQL + npm audit gate).
 ### Provision platform
 
 ```powershell
-./scripts/deploy-platform.ps1 -SubscriptionId <sub-id> -ResourceGroupName rg-apcl-platform-prod -Location australiaeast -ContainerAppName aca-apcl-prod -ContainerAppEnvironmentName cae-apcl-prod -LogAnalyticsWorkspaceName law-apcl-prod -ContainerRegistryName <globally-unique-acr-name> -KeyVaultName <globally-unique-kv-name> -EasyAuthTenantId <tenant-id> -EasyAuthClientId <app-client-id> -EasyAuthClientSecret "<app-client-secret>"
+./scripts/deploy-platform.ps1 -SubscriptionId <sub-id> -ResourceGroupName rg-apcl-platform-prod -Location australiaeast -ContainerAppName aca-apcl-prod -ContainerAppEnvironmentName cae-apcl-prod -LogAnalyticsWorkspaceName law-apcl-prod -ContainerRegistryName <globally-unique-acr-name> -KeyVaultName <globally-unique-kv-name> -StateStorageAccountName <globally-unique-storage-name> -StateFileShareName apclstate -EasyAuthTenantId <tenant-id> -EasyAuthClientId <app-client-id> -EasyAuthClientSecret "<app-client-secret>"
 ```
 
 Use ARM output instead of Bicep:
@@ -195,6 +197,7 @@ Container Apps auth boundary is now codified in deployment automation:
 1. `az containerapp auth update` enables auth and returns `401` for unauthenticated requests.
 2. `az containerapp auth microsoft update` configures Entra provider settings (tenant, client, issuer, audience).
 3. Script updates APCL runtime allowlist env vars to match provider settings.
+4. Script provisions Azure Files-backed state volume and mounts it at `/var/lib/apcl` in Container Apps.
 
 ### Post-deploy validation
 

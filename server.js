@@ -19,7 +19,8 @@ const DEPLOYMENT_MODE = String(process.env.APCL_DEPLOYMENT_MODE || 'local').toLo
 const DEPLOYMENT_WEBHOOK_URL = process.env.APCL_DEPLOYMENT_WEBHOOK_URL || '';
 const DEPLOYMENT_WEBHOOK_HMAC_SECRET = process.env.APCL_DEPLOYMENT_WEBHOOK_HMAC_SECRET || '';
 const DEPLOYMENT_STATUS_TOKEN = process.env.APCL_DEPLOYMENT_STATUS_TOKEN || '';
-const STATE_BACKEND = String(process.env.APCL_STATE_BACKEND || 'file').toLowerCase(); // file | sqlite
+const STATE_BACKEND = String(process.env.APCL_STATE_BACKEND || 'file').toLowerCase(); // file | sqlite | managed
+const MANAGED_STATE_ADAPTER_PATH = process.env.APCL_MANAGED_STATE_ADAPTER_PATH || '';
 const AUDIT_EXPORT_PATH = process.env.APCL_AUDIT_EXPORT_PATH || '';
 const AUDIT_EXPORT_SECRET = process.env.APCL_AUDIT_EXPORT_SECRET || '';
 const AUTH_MODE = String(process.env.APCL_AUTH_MODE || 'none').toLowerCase(); // none | easyauth | static
@@ -310,6 +311,7 @@ const stateStore = createStateStore({
   backend: STATE_BACKEND,
   auditExportPath: AUDIT_EXPORT_PATH,
   auditExportSecret: AUDIT_EXPORT_SECRET,
+  managedAdapterPath: MANAGED_STATE_ADAPTER_PATH,
 });
 
 function appendAuditEvent(state, event) {
@@ -1111,10 +1113,13 @@ function getProductionReadinessIssues() {
   if (!ALLOWED_DEPLOYER_IDENTITIES.size) {
     issues.push('APCL_ALLOWED_DEPLOYER_IDENTITIES must include at least one identity in production.');
   }
-  if (STATE_BACKEND !== 'sqlite') {
-    issues.push('APCL_STATE_BACKEND must be sqlite in production until managed DB backend is configured.');
+  if (STATE_BACKEND !== 'managed') {
+    issues.push('APCL_STATE_BACKEND must be managed in production.');
   }
-  if (hasUnsafeProductionPath(SQLITE_DB_FILE)) {
+  if (!MANAGED_STATE_ADAPTER_PATH) {
+    issues.push('APCL_MANAGED_STATE_ADAPTER_PATH must be configured when using managed backend.');
+  }
+  if (STATE_BACKEND === 'sqlite' && hasUnsafeProductionPath(SQLITE_DB_FILE)) {
     issues.push('APCL_SQLITE_DB_PATH must be a persistent non-/tmp path in production.');
   }
   if (!AUDIT_EXPORT_PATH) {
@@ -1236,6 +1241,7 @@ function handleApi(req, res, pathname) {
       time: nowIso(),
       authMode: AUTH_MODE,
       stateBackend: STATE_BACKEND,
+      managedStateAdapterConfigured: Boolean(MANAGED_STATE_ADAPTER_PATH),
       deploymentMode: DEPLOYMENT_MODE,
     });
   }

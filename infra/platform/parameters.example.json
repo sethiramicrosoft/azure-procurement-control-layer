@@ -20,6 +20,12 @@
     "keyVaultName": {
       "value": "kv-apcl-prod-001"
     },
+    "stateStorageAccountName": {
+      "value": "apclstateprod001"
+    },
+    "stateFileShareName": {
+      "value": "apclstate"
+    },
     "entitlementSecretName": {
       "value": "apcl-entitlement-secret"
     },
