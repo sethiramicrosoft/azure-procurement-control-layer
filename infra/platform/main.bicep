@@ -168,11 +168,11 @@ resource containerApp 'Microsoft.App/containerApps@2024-03-01' = {
             }
             {
               name: 'APCL_SQLITE_DB_PATH'
-              value: '/tmp/apcl.db'
+              value: '/var/lib/apcl/state/apcl.db'
             }
             {
               name: 'APCL_AUDIT_EXPORT_PATH'
-              value: '/tmp/audit-export.jsonl'
+              value: '/var/lib/apcl/audit/audit-export.jsonl'
             }
             {
               name: 'APCL_DEPLOYMENT_WEBHOOK_HMAC_SECRET'

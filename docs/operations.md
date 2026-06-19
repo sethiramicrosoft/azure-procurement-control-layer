@@ -15,6 +15,7 @@
 | Endpoint | Method | Purpose |
 |---|---|---|
 | `/api/health` | GET | Service heartbeat |
+| `/api/readiness` | GET | Deployment readiness posture (503 when production checks fail) |
 | `/api/summary` | GET | Dashboard summary |
 | `/api/config` | GET/PUT | Control-plane defaults (emails, budgets, thresholds) |
 | `/api/control-plane/status` | GET | Control-plane configuration/status |
@@ -135,6 +136,12 @@ Optional settings:
 - `APCL_DEPLOYMENT_POLL_BEARER_TOKEN=<bearer token for poll endpoint>`
 
 When SQLite backend is enabled, state writes use version-checked updates to reduce silent overwrite risk under concurrent requests.
+
+Production startup guardrails also require:
+
+1. `APCL_EASYAUTH_ALLOWED_TENANT_IDS` configured
+2. non-`/tmp` state/audit paths
+3. `APCL_AUDIT_EXPORT_SECRET` configured
 
 Webhook signing:
 

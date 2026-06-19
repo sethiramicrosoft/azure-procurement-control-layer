@@ -587,3 +587,56 @@ test('governance posture endpoint is available for security/platform roles', asy
     await app.stop();
   }
 });
+
+test('readiness endpoint reports ready in non-production mode', async () => {
+  const app = startApcl({ APCL_DEPLOYMENT_MODE: 'local' });
+  await app.ready();
+  try {
+    const readiness = await api(app.baseUrl, '/api/readiness');
+    assert.equal(readiness.response.status, 200);
+    assert.equal(readiness.payload.ready, true);
+    assert.ok(Array.isArray(readiness.payload.issues));
+  } finally {
+    await app.stop();
+  }
+});
+
+test('production startup fails when persistent state and audit paths are unsafe', async () => {
+  const port = randomPort();
+  const tempDir = createTempDir();
+  const env = {
+    ...process.env,
+    PORT: String(port),
+    NODE_ENV: 'production',
+    APCL_ENTITLEMENT_SECRET: 'prod-secret',
+    APCL_AUTH_MODE: 'easyauth',
+    APCL_EASYAUTH_ALLOWED_APP_IDS: 'apcl-client-id',
+    APCL_EASYAUTH_ALLOWED_TENANT_IDS: 'tenant-a',
+    APCL_DEPLOYMENT_MODE: 'webhook',
+    APCL_DEPLOYMENT_WEBHOOK_URL: 'https://example.invalid/hook',
+    APCL_DEPLOYMENT_WEBHOOK_HMAC_SECRET: 'hmac-secret',
+    APCL_DEPLOYMENT_STATUS_TOKEN: 'status-secret',
+    APCL_ENFORCE_DEPLOYER_ALLOWLIST: 'true',
+    APCL_ALLOWED_DEPLOYER_IDENTITIES: 'pipeline@contoso.com',
+    APCL_STATE_BACKEND: 'sqlite',
+    APCL_SQLITE_DB_PATH: '/tmp/apcl.db',
+    APCL_AUDIT_EXPORT_PATH: '/tmp/audit-export.jsonl',
+    APCL_AUDIT_EXPORT_SECRET: 'audit-secret',
+    APCL_STATIC_TOKENS_JSON: createStaticTokens(),
+  };
+
+  const proc = spawn('node', ['server.js'], {
+    cwd: REPO_ROOT,
+    env,
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+
+  let stderr = '';
+  proc.stderr.on('data', chunk => {
+    stderr += chunk.toString();
+  });
+
+  const exitCode = await new Promise(resolve => proc.once('exit', resolve));
+  assert.notEqual(exitCode, 0);
+  assert.match(stderr, /production readiness checks failed/i);
+});

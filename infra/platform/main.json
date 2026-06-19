@@ -5,7 +5,7 @@
     "_generator": {
       "name": "bicep",
       "version": "0.44.1.10279",
-      "templateHash": "18373824234904259244"
+      "templateHash": "4208544591765782584"
     }
   },
   "parameters": {
@@ -229,11 +229,11 @@
                 },
                 {
                   "name": "APCL_SQLITE_DB_PATH",
-                  "value": "/tmp/apcl.db"
+                  "value": "/var/lib/apcl/state/apcl.db"
                 },
                 {
                   "name": "APCL_AUDIT_EXPORT_PATH",
-                  "value": "/tmp/audit-export.jsonl"
+                  "value": "/var/lib/apcl/audit/audit-export.jsonl"
                 },
                 {
                   "name": "APCL_DEPLOYMENT_WEBHOOK_HMAC_SECRET",

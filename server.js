@@ -1076,6 +1076,58 @@ function summarizeReconciliation(state) {
   };
 }
 
+function hasUnsafeProductionPath(value) {
+  const normalized = String(value || '').trim().toLowerCase().replace(/\\/g, '/');
+  if (!normalized) return true;
+  if (normalized.startsWith('/tmp/')) return true;
+  if (normalized === '/tmp') return true;
+  if (normalized.includes('/tmp/')) return true;
+  return false;
+}
+
+function getProductionReadinessIssues() {
+  const issues = [];
+  if (AUTH_MODE !== 'easyauth') {
+    issues.push('APCL_AUTH_MODE must be easyauth in production.');
+  }
+  if (!EASYAUTH_ALLOWED_APP_IDS.size) {
+    issues.push('APCL_EASYAUTH_ALLOWED_APP_IDS must be configured in production.');
+  }
+  if (!EASYAUTH_ALLOWED_TENANT_IDS.size) {
+    issues.push('APCL_EASYAUTH_ALLOWED_TENANT_IDS must be configured in production.');
+  }
+  if (DEPLOYMENT_MODE !== 'webhook') {
+    issues.push('APCL_DEPLOYMENT_MODE must be webhook in production.');
+  }
+  if (!DEPLOYMENT_WEBHOOK_HMAC_SECRET) {
+    issues.push('APCL_DEPLOYMENT_WEBHOOK_HMAC_SECRET must be configured in production.');
+  }
+  if (!DEPLOYMENT_STATUS_TOKEN) {
+    issues.push('APCL_DEPLOYMENT_STATUS_TOKEN must be configured in production.');
+  }
+  if (!ENFORCE_DEPLOYER_ALLOWLIST) {
+    issues.push('APCL_ENFORCE_DEPLOYER_ALLOWLIST must be true in production.');
+  }
+  if (!ALLOWED_DEPLOYER_IDENTITIES.size) {
+    issues.push('APCL_ALLOWED_DEPLOYER_IDENTITIES must include at least one identity in production.');
+  }
+  if (STATE_BACKEND !== 'sqlite') {
+    issues.push('APCL_STATE_BACKEND must be sqlite in production until managed DB backend is configured.');
+  }
+  if (hasUnsafeProductionPath(SQLITE_DB_FILE)) {
+    issues.push('APCL_SQLITE_DB_PATH must be a persistent non-/tmp path in production.');
+  }
+  if (!AUDIT_EXPORT_PATH) {
+    issues.push('APCL_AUDIT_EXPORT_PATH must be configured in production.');
+  } else if (hasUnsafeProductionPath(AUDIT_EXPORT_PATH)) {
+    issues.push('APCL_AUDIT_EXPORT_PATH must be a persistent non-/tmp path in production.');
+  }
+  if (!AUDIT_EXPORT_SECRET) {
+    issues.push('APCL_AUDIT_EXPORT_SECRET must be configured in production.');
+  }
+  return issues;
+}
+
 function getExecutionResponseStatus(execution) {
   if (!execution) return 404;
   if (execution.status === 'queued' || execution.status === 'running') return 202;
@@ -1161,7 +1213,7 @@ function handleApi(req, res, pathname) {
     }
     : getIdentity(req);
 
-  if (pathname !== '/api/health') {
+  if (pathname !== '/api/health' && pathname !== '/api/readiness') {
     if (!identity.authenticated) {
       return send(res, 401, { error: `authentication required: ${identity.reason || 'unauthorized'}` });
     }
@@ -1185,6 +1237,16 @@ function handleApi(req, res, pathname) {
       authMode: AUTH_MODE,
       stateBackend: STATE_BACKEND,
       deploymentMode: DEPLOYMENT_MODE,
+    });
+  }
+
+  if (req.method === 'GET' && pathname === '/api/readiness') {
+    const issues = getProductionReadinessIssues();
+    const ready = process.env.NODE_ENV !== 'production' ? true : issues.length === 0;
+    return send(res, ready ? 200 : 503, {
+      ready,
+      environment: process.env.NODE_ENV || 'development',
+      issues,
     });
   }
 
@@ -1998,26 +2060,9 @@ if (process.env.NODE_ENV === 'production') {
   if (ENTITLEMENT_SECRET === 'apcl-dev-secret-change') {
     throw new Error('APCL_ENTITLEMENT_SECRET must be set to a strong non-default value in production.');
   }
-  if (AUTH_MODE === 'none') {
-    throw new Error('APCL_AUTH_MODE=none is not allowed in production.');
-  }
-  if (DEPLOYMENT_MODE !== 'webhook') {
-    throw new Error('APCL_DEPLOYMENT_MODE=webhook is required in production.');
-  }
-  if (DEPLOYMENT_MODE === 'webhook' && !DEPLOYMENT_WEBHOOK_HMAC_SECRET) {
-    throw new Error('APCL_DEPLOYMENT_WEBHOOK_HMAC_SECRET must be configured in production webhook mode.');
-  }
-  if (DEPLOYMENT_MODE === 'webhook' && !DEPLOYMENT_STATUS_TOKEN) {
-    throw new Error('APCL_DEPLOYMENT_STATUS_TOKEN must be configured in production webhook mode.');
-  }
-  if (!ENFORCE_DEPLOYER_ALLOWLIST) {
-    throw new Error('APCL_ENFORCE_DEPLOYER_ALLOWLIST=true is required in production.');
-  }
-  if (!ALLOWED_DEPLOYER_IDENTITIES.size) {
-    throw new Error('APCL_ALLOWED_DEPLOYER_IDENTITIES must contain at least one identity when allowlist enforcement is enabled.');
-  }
-  if (AUTH_MODE === 'easyauth' && !EASYAUTH_ALLOWED_APP_IDS.size) {
-    throw new Error('APCL_EASYAUTH_ALLOWED_APP_IDS must be configured in production EasyAuth mode.');
+  const readinessIssues = getProductionReadinessIssues();
+  if (readinessIssues.length) {
+    throw new Error(`APCL production readiness checks failed: ${readinessIssues.join(' ')}`);
   }
 }
 

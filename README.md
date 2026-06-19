@@ -93,6 +93,7 @@ Use the URL printed by the deployment script and open:
 
 - `https://<apcl-fqdn>/`
 - `https://<apcl-fqdn>/api/health`
+- `https://<apcl-fqdn>/api/readiness`
 
 ### Customer customization
 
@@ -186,6 +187,9 @@ Production guardrails now enforce:
 2. webhook signing + callback token configured
 3. deployer allowlist enabled with at least one identity
 4. EasyAuth app allowlist configured when `APCL_AUTH_MODE=easyauth`
+5. EasyAuth tenant allowlist configured
+6. persistent non-`/tmp` paths for state and audit export
+7. audit export secret configured
 
 ## Validation tests
 
@@ -447,6 +451,7 @@ Use APCL as the control-plane API behind your existing front-door workflow.
 ## API surface (high-level)
 
 - `GET /api/health`
+- `GET /api/readiness`
 - `GET /api/summary`
 - `GET|PUT /api/config`
 - `GET /api/control-plane/status`
