@@ -162,6 +162,18 @@ resource containerApp 'Microsoft.App/containerApps@2024-03-01' = {
               name: 'APCL_AUTH_MODE'
               value: 'easyauth'
             }
+            {
+              name: 'APCL_STATE_BACKEND'
+              value: 'sqlite'
+            }
+            {
+              name: 'APCL_SQLITE_DB_PATH'
+              value: '/tmp/apcl.db'
+            }
+            {
+              name: 'APCL_AUDIT_EXPORT_PATH'
+              value: '/tmp/audit-export.jsonl'
+            }
           ]
         }
       ]

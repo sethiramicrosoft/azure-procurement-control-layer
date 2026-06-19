@@ -85,6 +85,21 @@ In production:
 - `APCL_AUTH_MODE=none` is blocked.
 - default entitlement secret is blocked.
 
+## State backend and audit export
+
+Runtime options:
+
+1. `APCL_STATE_BACKEND=file` (default demo mode).
+2. `APCL_STATE_BACKEND=sqlite` (recommended for hardened runtime in this repository).
+
+Optional settings:
+
+- `APCL_SQLITE_DB_PATH=<path-to-apcl.db>`
+- `APCL_AUDIT_EXPORT_PATH=<path-to-audit-export.jsonl>`
+- `APCL_AUDIT_EXPORT_SECRET=<hmac-signing-secret>`
+
+When SQLite backend is enabled, state writes use version-checked updates to reduce silent overwrite risk under concurrent requests.
+
 ## Direct Azure deployment (Azure Container Apps)
 
 ### Provision platform

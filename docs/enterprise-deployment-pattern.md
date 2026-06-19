@@ -24,6 +24,9 @@ Environment variables:
 - `APCL_DEPLOYMENT_MODE=webhook`
 - `APCL_DEPLOYMENT_WEBHOOK_URL=<your-vending-orchestration-endpoint>`
 - `APCL_AUTH_MODE=easyauth`
+- `APCL_STATE_BACKEND=sqlite`
+- `APCL_SQLITE_DB_PATH=/app/data/apcl.db`
+- `APCL_AUDIT_EXPORT_PATH=/app/data/audit-export.jsonl`
 
 ## Step 2: Roll out governance baseline to subscription fleet
 

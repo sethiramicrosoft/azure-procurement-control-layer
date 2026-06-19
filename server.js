@@ -4,17 +4,22 @@ const path = require('path');
 const url = require('url');
 const crypto = require('crypto');
 const { signToken, verifyToken } = require('./lib/entitlement');
-const { appendAuditEvent, hydrateAuditChain } = require('./lib/audit');
+const { appendAuditEvent: appendAuditEventInternal, hydrateAuditChain } = require('./lib/audit');
+const { createStateStore } = require('./lib/state-store');
 
 const ROOT = __dirname;
 const DATA_DIR = path.join(ROOT, 'data');
 const DATA_FILE = path.join(DATA_DIR, 'state.json');
+const SQLITE_DB_FILE = process.env.APCL_SQLITE_DB_PATH || path.join(DATA_DIR, 'apcl.db');
 const PUBLIC_DIR = path.join(ROOT, 'public');
 const PORT = process.env.PORT ? Number(process.env.PORT) : 3000;
 const ENTITLEMENT_SECRET = process.env.APCL_ENTITLEMENT_SECRET || 'apcl-dev-secret-change';
 const ENTITLEMENT_TTL_MINUTES = Number(process.env.APCL_ENTITLEMENT_TTL_MINUTES || 60);
 const DEPLOYMENT_MODE = String(process.env.APCL_DEPLOYMENT_MODE || 'local').toLowerCase(); // local | webhook
 const DEPLOYMENT_WEBHOOK_URL = process.env.APCL_DEPLOYMENT_WEBHOOK_URL || '';
+const STATE_BACKEND = String(process.env.APCL_STATE_BACKEND || 'file').toLowerCase(); // file | sqlite
+const AUDIT_EXPORT_PATH = process.env.APCL_AUDIT_EXPORT_PATH || '';
+const AUDIT_EXPORT_SECRET = process.env.APCL_AUDIT_EXPORT_SECRET || '';
 const AUTH_MODE = String(process.env.APCL_AUTH_MODE || 'none').toLowerCase(); // none | easyauth | static
 const STATIC_TOKEN_MAP = (() => {
   try {
@@ -122,6 +127,21 @@ function hasRequiredRole(identity, requiredRoles) {
   if (!requiredRoles || !requiredRoles.length) return true;
   const userRoles = Array.isArray(identity.roles) ? identity.roles : [];
   return requiredRoles.some(role => userRoles.includes(String(role).toLowerCase()));
+}
+
+const stateStore = createStateStore({
+  dataDir: DATA_DIR,
+  dataFile: DATA_FILE,
+  sqliteDbPath: SQLITE_DB_FILE,
+  backend: STATE_BACKEND,
+  auditExportPath: AUDIT_EXPORT_PATH,
+  auditExportSecret: AUDIT_EXPORT_SECRET,
+});
+
+function appendAuditEvent(state, event) {
+  const entry = appendAuditEventInternal(state, event);
+  stateStore.exportAudit(entry);
+  return entry;
 }
 
 function nextExceptionNumber(request) {
@@ -361,10 +381,6 @@ function makeId(prefix) {
   return `${prefix}_${crypto.randomBytes(6).toString('hex')}`;
 }
 
-function ensureDataDir() {
-  fs.mkdirSync(DATA_DIR, { recursive: true });
-}
-
 function seedState() {
   const baseBudget = 25000;
   return {
@@ -496,16 +512,15 @@ function seedState() {
 }
 
 function loadState() {
-  ensureDataDir();
-  if (!fs.existsSync(DATA_FILE)) {
-    const seed = seedState();
-    appendAuditEvent(seed, { at: nowIso(), action: 'seeded', actor: 'system', subject: 'APCL demo state initialized' });
-    fs.writeFileSync(DATA_FILE, JSON.stringify(seed, null, 2));
-    return seed;
+  const parsed = stateStore.loadState(seedState, normalizeState);
+  if (!Array.isArray(parsed.audit) || !parsed.audit.length) {
+    appendAuditEvent(parsed, { at: nowIso(), action: 'seeded', actor: 'system', subject: 'APCL demo state initialized' });
+    stateStore.saveState(parsed);
   }
+  return parsed;
+}
 
-  const raw = fs.readFileSync(DATA_FILE, 'utf8');
-  const parsed = JSON.parse(raw);
+function normalizeState(parsed) {
   parsed.reconciliation = parsed.reconciliation || { imports: [], rows: [], orphanSpend: [] };
   parsed.reconciliation.chargebackSnapshots = parsed.reconciliation.chargebackSnapshots || [];
   parsed.config = parsed.config || {
@@ -563,10 +578,7 @@ function loadState() {
 }
 
 function saveState(state) {
-  ensureDataDir();
-  const tempFile = `${DATA_FILE}.tmp`;
-  fs.writeFileSync(tempFile, JSON.stringify(state, null, 2));
-  fs.renameSync(tempFile, DATA_FILE);
+  stateStore.saveState(state);
 }
 
 function send(res, statusCode, body, headers = {}) {
@@ -802,7 +814,7 @@ function handleApi(req, res, pathname) {
   };
 
   if (req.method === 'GET' && pathname === '/api/health') {
-    return send(res, 200, { status: 'ok', time: nowIso(), authMode: AUTH_MODE });
+    return send(res, 200, { status: 'ok', time: nowIso(), authMode: AUTH_MODE, stateBackend: STATE_BACKEND });
   }
 
   if (req.method === 'GET' && pathname === '/api/policy') {
@@ -862,6 +874,10 @@ function handleApi(req, res, pathname) {
       metadata: state.metadata,
       config: state.config,
       controls: state.controls,
+      runtime: {
+        authMode: AUTH_MODE,
+        stateBackend: STATE_BACKEND,
+      },
       tenants: state.tenants,
       assignments: {
         total: state.assignments.length,
@@ -907,9 +923,8 @@ function handleApi(req, res, pathname) {
         const request = state.requests.find(r => r.id === execution.requestId);
         if (request && nextStatus === 'succeeded' && request.state !== 'deployed') {
           const assignment = state.assignments.find(a => a.id === execution.assignmentId);
-          const entitlement = (request.entitlements || []).find(e => !e.consumedAt);
-          if (assignment && entitlement) {
-            finalizeDeploymentSuccess(state, request, execution, { entitlement });
+          if (assignment) {
+            finalizeDeploymentSuccess(state, request, execution, { entitlement: null });
             evaluateBudgetAlerts(state, 'deployment');
           }
         }
@@ -1094,6 +1109,10 @@ function handleApi(req, res, pathname) {
           const validation = validateDeployEntitlement(request, entitlementToken);
           if (!validation.ok) {
             return send(res, 403, { error: `deployment denied: ${validation.reason}` });
+          }
+          const consumed = stateStore.tryConsumeEntitlement(request, validation.entitlement, identity.actor);
+          if (!consumed) {
+            return send(res, 409, { error: 'deployment denied: entitlement token already consumed' });
           }
           const execution = await triggerDeploymentExecution(state, request, assignment, {
             ...body,

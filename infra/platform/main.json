@@ -5,7 +5,7 @@
     "_generator": {
       "name": "bicep",
       "version": "0.44.1.10279",
-      "templateHash": "12660980144607910944"
+      "templateHash": "6585893068385074716"
     }
   },
   "parameters": {
@@ -222,6 +222,18 @@
                 {
                   "name": "APCL_AUTH_MODE",
                   "value": "easyauth"
+                },
+                {
+                  "name": "APCL_STATE_BACKEND",
+                  "value": "sqlite"
+                },
+                {
+                  "name": "APCL_SQLITE_DB_PATH",
+                  "value": "/tmp/apcl.db"
+                },
+                {
+                  "name": "APCL_AUDIT_EXPORT_PATH",
+                  "value": "/tmp/audit-export.jsonl"
                 }
               ]
             }

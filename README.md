@@ -121,6 +121,22 @@ Required role families:
 
 `APCL_AUTH_MODE=none` and default entitlement secret are blocked when `NODE_ENV=production`.
 
+### Durable state and audit export
+
+APCL supports pluggable state backends:
+
+- `APCL_STATE_BACKEND=file` (default demo mode)
+- `APCL_STATE_BACKEND=sqlite` (transactional snapshot persistence with optimistic write conflict checks)
+
+SQLite path can be configured with:
+
+- `APCL_SQLITE_DB_PATH=<path-to-apcl.db>`
+
+For append-only external audit stream export:
+
+- `APCL_AUDIT_EXPORT_PATH=<path-to-audit-export.jsonl>`
+- `APCL_AUDIT_EXPORT_SECRET=<hmac-secret-for-export-signatures>` (optional but recommended)
+
 ## Why APCL exists
 
 Most procurement operating models are PO-first and pre-approved.
@@ -421,6 +437,8 @@ docker run -p 3000:3000 -e APCL_ENTITLEMENT_SECRET="<strong-secret>" apcl:latest
 - [ ] Set APCL entitlement secret only from Key Vault and rotate it on schedule.
 - [ ] Restrict ingress and API exposure based on enterprise network/security policy.
 - [ ] Set deployment mode to webhook and integrate with vending/orchestration pipeline.
+- [ ] Use `APCL_STATE_BACKEND=sqlite` (or external managed datastore pattern) for durable runtime state.
+- [ ] Enable append-only audit export via `APCL_AUDIT_EXPORT_PATH` (+ optional HMAC signing secret).
 
 ## Current maturity statement
 
