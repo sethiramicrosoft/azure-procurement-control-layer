@@ -31,7 +31,19 @@ param(
 
   [Parameter(Mandatory = $false)]
   [ValidateSet('Bicep', 'ARM')]
-  [string]$TemplateType = 'Bicep'
+  [string]$TemplateType = 'Bicep',
+
+  [Parameter(Mandatory = $false)]
+  [bool]$ConfigureContainerAppAuth = $true,
+
+  [Parameter(Mandatory = $false)]
+  [string]$EasyAuthTenantId = '',
+
+  [Parameter(Mandatory = $false)]
+  [string]$EasyAuthClientId = '',
+
+  [Parameter(Mandatory = $false)]
+  [string]$EasyAuthClientSecret = ''
 )
 
 $ErrorActionPreference = 'Stop'
@@ -84,6 +96,40 @@ Write-Host "Container Registry: $($outputs.containerRegistryLoginServer.value)"
 Write-Host "Key Vault: $($outputs.keyVaultNameOut.value)"
 Write-Host "Secret URI: $($outputs.entitlementSecretUri.value)"
 Write-Host "Secret value was generated/set but is intentionally not printed." -ForegroundColor Yellow
+
+if ($ConfigureContainerAppAuth) {
+  if ([string]::IsNullOrWhiteSpace($EasyAuthTenantId) -or [string]::IsNullOrWhiteSpace($EasyAuthClientId) -or [string]::IsNullOrWhiteSpace($EasyAuthClientSecret)) {
+    throw "Container App auth configuration requested, but EasyAuthTenantId, EasyAuthClientId, and EasyAuthClientSecret are required."
+  }
+
+  Write-Host "Configuring Container Apps authentication boundary..." -ForegroundColor Cyan
+  az containerapp auth update `
+    --name $ContainerAppName `
+    --resource-group $ResourceGroupName `
+    --enabled true `
+    --unauthenticated-client-action Return401 `
+    --redirect-provider AzureActiveDirectory `
+    --excluded-paths /api/health /api/readiness `
+    --output none
+
+  $issuer = "https://login.microsoftonline.com/$EasyAuthTenantId/v2.0"
+  az containerapp auth microsoft update `
+    --name $ContainerAppName `
+    --resource-group $ResourceGroupName `
+    --tenant-id $EasyAuthTenantId `
+    --client-id $EasyAuthClientId `
+    --client-secret $EasyAuthClientSecret `
+    --issuer $issuer `
+    --allowed-audiences $EasyAuthClientId `
+    --output none
+
+  Write-Host "Aligning APCL runtime allowlists with hosting auth settings..." -ForegroundColor Cyan
+  az containerapp update `
+    --name $ContainerAppName `
+    --resource-group $ResourceGroupName `
+    --set-env-vars APCL_AUTH_MODE=easyauth APCL_EASYAUTH_ALLOWED_APP_IDS="$EasyAuthClientId" APCL_EASYAUTH_ALLOWED_TENANT_IDS="$EasyAuthTenantId" `
+    --output none
+}
 
 Write-Host "`nNext step:" -ForegroundColor Cyan
 Write-Host "./scripts/deploy-app-to-aca.ps1 -SubscriptionId $SubscriptionId -ResourceGroupName $ResourceGroupName -ContainerAppName $ContainerAppName -ContainerRegistryName $ContainerRegistryName"

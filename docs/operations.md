@@ -169,7 +169,7 @@ Security workflow: `.github/workflows/security.yml` (CodeQL + npm audit gate).
 ### Provision platform
 
 ```powershell
-./scripts/deploy-platform.ps1 -SubscriptionId <sub-id> -ResourceGroupName rg-apcl-platform-prod -Location australiaeast -ContainerAppName aca-apcl-prod -ContainerAppEnvironmentName cae-apcl-prod -LogAnalyticsWorkspaceName law-apcl-prod -ContainerRegistryName <globally-unique-acr-name> -KeyVaultName <globally-unique-kv-name>
+./scripts/deploy-platform.ps1 -SubscriptionId <sub-id> -ResourceGroupName rg-apcl-platform-prod -Location australiaeast -ContainerAppName aca-apcl-prod -ContainerAppEnvironmentName cae-apcl-prod -LogAnalyticsWorkspaceName law-apcl-prod -ContainerRegistryName <globally-unique-acr-name> -KeyVaultName <globally-unique-kv-name> -EasyAuthTenantId <tenant-id> -EasyAuthClientId <app-client-id> -EasyAuthClientSecret "<app-client-secret>"
 ```
 
 Use ARM output instead of Bicep:
@@ -189,6 +189,12 @@ Regenerate ARM output from Bicep whenever infrastructure changes:
 ```powershell
 ./scripts/deploy-app-to-aca.ps1 -SubscriptionId <sub-id> -ResourceGroupName rg-apcl-platform-prod -ContainerAppName aca-apcl-prod -ContainerRegistryName <globally-unique-acr-name>
 ```
+
+Container Apps auth boundary is now codified in deployment automation:
+
+1. `az containerapp auth update` enables auth and returns `401` for unauthenticated requests.
+2. `az containerapp auth microsoft update` configures Entra provider settings (tenant, client, issuer, audience).
+3. Script updates APCL runtime allowlist env vars to match provider settings.
 
 ### Post-deploy validation
 
