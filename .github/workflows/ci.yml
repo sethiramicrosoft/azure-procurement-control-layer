@@ -16,10 +16,6 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: '24'
-          cache: 'npm'
-
-      - name: Setup Azure CLI
-        uses: azure/setup-azcli@v4
 
       - name: Install dependencies
         run: npm install
