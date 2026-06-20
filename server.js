@@ -60,6 +60,10 @@ const EASYAUTH_ACTOR_ROLE_MAP = (() => {
     return {};
   }
 })();
+const EASYAUTH_DEFAULT_ROLES = String(process.env.APCL_EASYAUTH_DEFAULT_ROLES || '')
+  .split(',')
+  .map(v => String(v || '').trim().toLowerCase())
+  .filter(Boolean);
 const APPROVER_GROUPS = (() => {
   try {
     const parsed = JSON.parse(process.env.APCL_APPROVER_GROUPS_JSON || '{}');
@@ -192,9 +196,9 @@ function getIdentity(req) {
       }
     }
     const mappedRoles = EASYAUTH_ACTOR_ROLE_MAP[String(principal.actor || '').toLowerCase()] || [];
-    if (mappedRoles.length) {
-      principal.roles = Array.from(new Set([...(principal.roles || []), ...mappedRoles]));
-    }
+    principal.roles = Array.from(
+      new Set([...(principal.roles || []), ...mappedRoles, ...EASYAUTH_DEFAULT_ROLES])
+    );
     return principal;
   }
 
