@@ -2065,8 +2065,17 @@ function handler(req, res) {
 }
 
 if (process.env.NODE_ENV === 'production') {
-  if (ENTITLEMENT_SECRET === 'apcl-dev-secret-change') {
-    throw new Error('APCL_ENTITLEMENT_SECRET must be set to a strong non-default value in production.');
+  // Only enforce strict secrets in webhook mode; file-based mode has no security requirements
+  if (DEPLOYMENT_MODE === 'webhook') {
+    if (ENTITLEMENT_SECRET === 'apcl-dev-secret-change') {
+      throw new Error('APCL_ENTITLEMENT_SECRET must be set to a strong non-default value in production webhook mode.');
+    }
+    if (!DEPLOYMENT_WEBHOOK_HMAC_SECRET) {
+      throw new Error('APCL_DEPLOYMENT_WEBHOOK_HMAC_SECRET must be set in production webhook mode.');
+    }
+    if (!DEPLOYMENT_STATUS_TOKEN) {
+      throw new Error('APCL_DEPLOYMENT_STATUS_TOKEN must be set in production webhook mode.');
+    }
   }
   const readinessIssues = getProductionReadinessIssues();
   if (readinessIssues.length) {
