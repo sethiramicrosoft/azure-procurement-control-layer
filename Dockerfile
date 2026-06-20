@@ -1,7 +1,9 @@
-FROM node:20-slim
+FROM node:22-slim
 WORKDIR /app
 COPY package.json ./
+RUN npm install
 COPY server.js ./
+COPY lib ./lib
 COPY public ./public
 COPY infra ./infra
 COPY scripts ./scripts
