@@ -1089,49 +1089,61 @@ function hasUnsafeProductionPath(value) {
 
 function getProductionReadinessIssues() {
   const issues = [];
-  if (AUTH_MODE !== 'easyauth') {
-    issues.push('APCL_AUTH_MODE must be easyauth in production.');
+  
+  // For file-based (demo) mode, minimal checks are needed
+  if (DEPLOYMENT_MODE === 'file') {
+    // Only check that state backend is reasonable
+    const fileSafe = STATE_BACKEND === 'file' || (STATE_BACKEND === 'sqlite' && !hasUnsafeProductionPath(SQLITE_DB_FILE));
+    if (!fileSafe) {
+      issues.push('File-based mode requires STATE_BACKEND=file or persistent sqlite path.');
+    }
+    return issues;
   }
-  if (!EASYAUTH_ALLOWED_APP_IDS.size) {
-    issues.push('APCL_EASYAUTH_ALLOWED_APP_IDS must be configured in production.');
+  
+  // Webhook mode requires full production configuration
+  if (DEPLOYMENT_MODE === 'webhook') {
+    if (AUTH_MODE !== 'easyauth') {
+      issues.push('APCL_AUTH_MODE must be easyauth for webhook mode.');
+    }
+    if (!EASYAUTH_ALLOWED_APP_IDS.size) {
+      issues.push('APCL_EASYAUTH_ALLOWED_APP_IDS must be configured for webhook mode.');
+    }
+    if (!EASYAUTH_ALLOWED_TENANT_IDS.size) {
+      issues.push('APCL_EASYAUTH_ALLOWED_TENANT_IDS must be configured for webhook mode.');
+    }
+    if (!DEPLOYMENT_WEBHOOK_HMAC_SECRET) {
+      issues.push('APCL_DEPLOYMENT_WEBHOOK_HMAC_SECRET must be configured for webhook mode.');
+    }
+    if (!DEPLOYMENT_STATUS_TOKEN) {
+      issues.push('APCL_DEPLOYMENT_STATUS_TOKEN must be configured for webhook mode.');
+    }
+    if (!ENFORCE_DEPLOYER_ALLOWLIST) {
+      issues.push('APCL_ENFORCE_DEPLOYER_ALLOWLIST must be true for webhook mode.');
+    }
+    if (!ALLOWED_DEPLOYER_IDENTITIES.size) {
+      issues.push('APCL_ALLOWED_DEPLOYER_IDENTITIES must include at least one identity for webhook mode.');
+    }
+    const sqlitePersistent = STATE_BACKEND === 'sqlite' && !hasUnsafeProductionPath(SQLITE_DB_FILE);
+    const managedConfigured = STATE_BACKEND === 'managed' && Boolean(MANAGED_STATE_ADAPTER_PATH);
+    if (!sqlitePersistent && !managedConfigured) {
+      issues.push('Webhook mode state backend must be either managed (with APCL_MANAGED_STATE_ADAPTER_PATH) or sqlite with persistent APCL_SQLITE_DB_PATH.');
+    }
+    if (STATE_BACKEND === 'managed' && !MANAGED_STATE_ADAPTER_PATH) {
+      issues.push('APCL_MANAGED_STATE_ADAPTER_PATH must be configured when APCL_STATE_BACKEND=managed.');
+    }
+    if (STATE_BACKEND === 'sqlite' && hasUnsafeProductionPath(SQLITE_DB_FILE)) {
+      issues.push('APCL_SQLITE_DB_PATH must be persistent for webhook mode.');
+    }
+    if (!AUDIT_EXPORT_PATH) {
+      issues.push('APCL_AUDIT_EXPORT_PATH must be configured for webhook mode.');
+    } else if (hasUnsafeProductionPath(AUDIT_EXPORT_PATH)) {
+      issues.push('APCL_AUDIT_EXPORT_PATH must be persistent for webhook mode.');
+    }
+    if (!AUDIT_EXPORT_SECRET) {
+      issues.push('APCL_AUDIT_EXPORT_SECRET must be configured for webhook mode.');
+    }
   }
-  if (!EASYAUTH_ALLOWED_TENANT_IDS.size) {
-    issues.push('APCL_EASYAUTH_ALLOWED_TENANT_IDS must be configured in production.');
-  }
-  if (DEPLOYMENT_MODE !== 'webhook') {
-    issues.push('APCL_DEPLOYMENT_MODE must be webhook in production.');
-  }
-  if (!DEPLOYMENT_WEBHOOK_HMAC_SECRET) {
-    issues.push('APCL_DEPLOYMENT_WEBHOOK_HMAC_SECRET must be configured in production.');
-  }
-  if (!DEPLOYMENT_STATUS_TOKEN) {
-    issues.push('APCL_DEPLOYMENT_STATUS_TOKEN must be configured in production.');
-  }
-  if (!ENFORCE_DEPLOYER_ALLOWLIST) {
-    issues.push('APCL_ENFORCE_DEPLOYER_ALLOWLIST must be true in production.');
-  }
-  if (!ALLOWED_DEPLOYER_IDENTITIES.size) {
-    issues.push('APCL_ALLOWED_DEPLOYER_IDENTITIES must include at least one identity in production.');
-  }
-  const sqlitePersistent = STATE_BACKEND === 'sqlite' && !hasUnsafeProductionPath(SQLITE_DB_FILE);
-  const managedConfigured = STATE_BACKEND === 'managed' && Boolean(MANAGED_STATE_ADAPTER_PATH);
-  if (!sqlitePersistent && !managedConfigured) {
-    issues.push('Production state backend must be either managed (with APCL_MANAGED_STATE_ADAPTER_PATH) or sqlite with persistent non-/tmp APCL_SQLITE_DB_PATH.');
-  }
-  if (STATE_BACKEND === 'managed' && !MANAGED_STATE_ADAPTER_PATH) {
-    issues.push('APCL_MANAGED_STATE_ADAPTER_PATH must be configured when APCL_STATE_BACKEND=managed.');
-  }
-  if (STATE_BACKEND === 'sqlite' && hasUnsafeProductionPath(SQLITE_DB_FILE)) {
-    issues.push('APCL_SQLITE_DB_PATH must be a persistent non-/tmp path when APCL_STATE_BACKEND=sqlite in production.');
-  }
-  if (!AUDIT_EXPORT_PATH) {
-    issues.push('APCL_AUDIT_EXPORT_PATH must be configured in production.');
-  } else if (hasUnsafeProductionPath(AUDIT_EXPORT_PATH)) {
-    issues.push('APCL_AUDIT_EXPORT_PATH must be a persistent non-/tmp path in production.');
-  }
-  if (!AUDIT_EXPORT_SECRET) {
-    issues.push('APCL_AUDIT_EXPORT_SECRET must be configured in production.');
-  }
+  
   return issues;
 }
 
