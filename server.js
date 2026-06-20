@@ -44,6 +44,22 @@ const EASYAUTH_GROUP_ROLE_MAP = (() => {
     return {};
   }
 })();
+const EASYAUTH_ACTOR_ROLE_MAP = (() => {
+  try {
+    const parsed = JSON.parse(process.env.APCL_EASYAUTH_ACTOR_ROLE_MAP_JSON || '{}');
+    if (!parsed || typeof parsed !== 'object') return {};
+    return Object.fromEntries(
+      Object.entries(parsed).map(([actor, roles]) => [
+        String(actor || '').trim().toLowerCase(),
+        Array.isArray(roles)
+          ? roles.map(r => String(r || '').trim().toLowerCase()).filter(Boolean)
+          : [],
+      ])
+    );
+  } catch {
+    return {};
+  }
+})();
 const APPROVER_GROUPS = (() => {
   try {
     const parsed = JSON.parse(process.env.APCL_APPROVER_GROUPS_JSON || '{}');
@@ -174,6 +190,10 @@ function getIdentity(req) {
       if (!EASYAUTH_ALLOWED_TENANT_IDS.has(tenantId)) {
         return { authenticated: false, reason: 'token tenant not allowed' };
       }
+    }
+    const mappedRoles = EASYAUTH_ACTOR_ROLE_MAP[String(principal.actor || '').toLowerCase()] || [];
+    if (mappedRoles.length) {
+      principal.roles = Array.from(new Set([...(principal.roles || []), ...mappedRoles]));
     }
     return principal;
   }
