@@ -8,8 +8,9 @@ const { appendAuditEvent: appendAuditEventInternal, hydrateAuditChain } = requir
 const { createStateStore } = require('./lib/state-store');
 
 const ROOT = __dirname;
-const DATA_DIR = path.join(ROOT, 'data');
-const DATA_FILE = path.join(DATA_DIR, 'state.json');
+const DEFAULT_DATA_DIR = path.join(ROOT, 'data');
+const DATA_FILE = process.env.APCL_STATE_FILE_PATH || path.join(DEFAULT_DATA_DIR, 'state.json');
+const DATA_DIR = path.dirname(DATA_FILE);
 const SQLITE_DB_FILE = process.env.APCL_SQLITE_DB_PATH || path.join(DATA_DIR, 'apcl.db');
 const PUBLIC_DIR = path.join(ROOT, 'public');
 const PORT = process.env.PORT ? Number(process.env.PORT) : 3000;
@@ -1157,15 +1158,19 @@ function getProductionReadinessIssues() {
       issues.push('APCL_ALLOWED_DEPLOYER_IDENTITIES must include at least one identity for webhook mode.');
     }
     const sqlitePersistent = STATE_BACKEND === 'sqlite' && !hasUnsafeProductionPath(SQLITE_DB_FILE);
+    const filePersistent = STATE_BACKEND === 'file' && !hasUnsafeProductionPath(DATA_FILE);
     const managedConfigured = STATE_BACKEND === 'managed' && Boolean(MANAGED_STATE_ADAPTER_PATH);
-    if (!sqlitePersistent && !managedConfigured) {
-      issues.push('Webhook mode state backend must be either managed (with APCL_MANAGED_STATE_ADAPTER_PATH) or sqlite with persistent APCL_SQLITE_DB_PATH.');
+    if (!sqlitePersistent && !managedConfigured && !filePersistent) {
+      issues.push('Webhook mode state backend must be managed, persistent sqlite, or persistent file state path.');
     }
     if (STATE_BACKEND === 'managed' && !MANAGED_STATE_ADAPTER_PATH) {
       issues.push('APCL_MANAGED_STATE_ADAPTER_PATH must be configured when APCL_STATE_BACKEND=managed.');
     }
     if (STATE_BACKEND === 'sqlite' && hasUnsafeProductionPath(SQLITE_DB_FILE)) {
       issues.push('APCL_SQLITE_DB_PATH must be persistent for webhook mode.');
+    }
+    if (STATE_BACKEND === 'file' && hasUnsafeProductionPath(DATA_FILE)) {
+      issues.push('APCL_STATE_FILE_PATH must be persistent for webhook mode when APCL_STATE_BACKEND=file.');
     }
     if (!AUDIT_EXPORT_PATH) {
       issues.push('APCL_AUDIT_EXPORT_PATH must be configured for webhook mode.');
