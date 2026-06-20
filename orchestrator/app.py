@@ -50,7 +50,7 @@ def ensure_az_login() -> None:
     global az_logged_in
     if az_logged_in:
         return
-    run_az(["login", "--identity", "--allow-no-subscriptions"], timeout=120)
+    run_az(["login", "--identity"], timeout=120)
     az_logged_in = True
 
 
