@@ -7,7 +7,7 @@ import subprocess
 import threading
 import time
 from queue import Queue
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
 import requests
 from flask import Flask, jsonify, request
