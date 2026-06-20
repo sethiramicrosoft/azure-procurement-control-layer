@@ -1163,6 +1163,66 @@ function getExecutionResponseStatus(execution) {
   return 200;
 }
 
+function normalizeDeploymentStatusInput(value) {
+  const raw = String(value || '').toLowerCase().trim();
+  if (raw === 'success') return 'succeeded';
+  if (raw === 'error') return 'failed';
+  return raw;
+}
+
+function applyDeploymentStatusUpdate(state, identity, executionRef, body) {
+  const nextStatus = normalizeDeploymentStatusInput(body.status);
+  if (!['queued', 'running', 'succeeded', 'failed'].includes(nextStatus)) {
+    return { code: 400, payload: { error: 'status must be queued, running, succeeded, or failed' } };
+  }
+  const execution = (state.deploymentExecutions || []).find(e =>
+    e.id === executionRef || e.number === executionRef || e.externalRunId === executionRef
+  );
+  if (!execution) {
+    return { code: 404, payload: { error: 'deployment execution not found' } };
+  }
+  if (!isValidDeploymentStatusTransition(execution.status, nextStatus)) {
+    return {
+      code: 409,
+      payload: {
+        error: `invalid status transition: ${execution.status} -> ${nextStatus}`,
+        executionId: execution.id,
+      },
+    };
+  }
+  execution.status = nextStatus;
+  execution.resultMessage = String(
+    body.resultMessage || body.message || execution.resultMessage || ''
+  ).trim() || null;
+  execution.externalRunId = String(body.externalRunId || execution.externalRunId || '').trim() || null;
+  if (isTerminalDeploymentStatus(nextStatus)) {
+    execution.completedAt = nowIso();
+  }
+
+  const request = state.requests.find(r => r.id === execution.requestId);
+  if (request && nextStatus === 'succeeded' && request.state !== 'deployed') {
+    const assignment = state.assignments.find(a => a.id === execution.assignmentId);
+    if (assignment) {
+      finalizeDeploymentSuccess(state, request, execution, { entitlement: null });
+      evaluateBudgetAlerts(state, 'deployment');
+    }
+  }
+
+  appendAuditEvent(state, {
+    at: nowIso(),
+    action: `deployment-status-${nextStatus}`,
+    actor: identity.actor,
+    subject: execution.requestNumber,
+    details: {
+      executionId: execution.id,
+      externalRunId: execution.externalRunId,
+      resultMessage: execution.resultMessage,
+    },
+  });
+  saveState(state);
+  return { code: 200, payload: { execution } };
+}
+
 function findIdempotentExecution(state, request, key) {
   if (!key) return null;
   const record = (state.deploymentIdempotency || []).find(
@@ -1223,7 +1283,8 @@ function calculateOperationalMetrics(state) {
 
 function handleApi(req, res, pathname) {
   const state = loadState();
-  const deploymentStatusPath = /^\/api\/deployments\/[^/]+\/status$/.test(pathname);
+  const deploymentStatusPath = pathname === '/api/deployments/status'
+    || /^\/api\/deployments\/[^/]+\/status$/.test(pathname);
   const suppliedStatusToken = deploymentStatusPath
     ? String(req.headers['x-apcl-status-token'] || '').trim()
     : '';
@@ -1449,6 +1510,25 @@ function handleApi(req, res, pathname) {
     return send(res, 200, { metrics: calculateOperationalMetrics(state) });
   }
 
+  if (req.method === 'POST' && pathname === '/api/deployments/status') {
+    if (!requireRoles(['deployer', 'platform'])) return;
+    if (DEPLOYMENT_STATUS_TOKEN && !callbackTokenValid && !isPlatformActor(identity)) {
+      return send(res, 401, { error: 'deployment status token required for callback updates' });
+    }
+    return readJson(req)
+      .then(body => {
+        const executionRef = String(
+          body.executionId || body.executionRef || body.externalRunId || ''
+        ).trim();
+        if (!executionRef) {
+          return send(res, 400, { error: 'executionId is required' });
+        }
+        const outcome = applyDeploymentStatusUpdate(state, identity, executionRef, body);
+        return send(res, outcome.code, outcome.payload);
+      })
+      .catch(err => send(res, 400, { error: err.message }));
+  }
+
   const deploymentStatusMatch = pathname.match(/^\/api\/deployments\/([^/]+)\/status$/);
   if (deploymentStatusMatch && req.method === 'POST') {
     if (!requireRoles(['deployer', 'platform'])) return;
@@ -1458,51 +1538,8 @@ function handleApi(req, res, pathname) {
     const executionRef = decodeURIComponent(deploymentStatusMatch[1]);
     return readJson(req)
       .then(body => {
-        const nextStatus = String(body.status || '').toLowerCase();
-        if (!['queued', 'running', 'succeeded', 'failed'].includes(nextStatus)) {
-          return send(res, 400, { error: 'status must be queued, running, succeeded, or failed' });
-        }
-        const execution = (state.deploymentExecutions || []).find(e =>
-          e.id === executionRef || e.number === executionRef || e.externalRunId === executionRef
-        );
-        if (!execution) {
-          return send(res, 404, { error: 'deployment execution not found' });
-        }
-        if (!isValidDeploymentStatusTransition(execution.status, nextStatus)) {
-          return send(res, 409, {
-            error: `invalid status transition: ${execution.status} -> ${nextStatus}`,
-            executionId: execution.id,
-          });
-        }
-        execution.status = nextStatus;
-        execution.resultMessage = String(body.resultMessage || execution.resultMessage || '').trim() || null;
-        execution.externalRunId = String(body.externalRunId || execution.externalRunId || '').trim() || null;
-        if (isTerminalDeploymentStatus(nextStatus)) {
-          execution.completedAt = nowIso();
-        }
-
-        const request = state.requests.find(r => r.id === execution.requestId);
-        if (request && nextStatus === 'succeeded' && request.state !== 'deployed') {
-          const assignment = state.assignments.find(a => a.id === execution.assignmentId);
-          if (assignment) {
-            finalizeDeploymentSuccess(state, request, execution, { entitlement: null });
-            evaluateBudgetAlerts(state, 'deployment');
-          }
-        }
-
-        appendAuditEvent(state, {
-          at: nowIso(),
-          action: `deployment-status-${nextStatus}`,
-          actor: identity.actor,
-          subject: execution.requestNumber,
-          details: {
-            executionId: execution.id,
-            externalRunId: execution.externalRunId,
-            resultMessage: execution.resultMessage,
-          },
-        });
-        saveState(state);
-        send(res, 200, { execution });
+        const outcome = applyDeploymentStatusUpdate(state, identity, executionRef, body);
+        return send(res, outcome.code, outcome.payload);
       })
       .catch(err => send(res, 400, { error: err.message }));
   }
