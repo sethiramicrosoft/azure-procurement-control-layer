@@ -80,6 +80,10 @@ const STATIC_TOKEN_MAP = (() => {
     return {};
   }
 })();
+const SEED_SAMPLE_DATA = String(
+  process.env.APCL_SEED_SAMPLE_DATA
+  || (process.env.NODE_ENV === 'production' ? 'false' : 'true')
+).toLowerCase() === 'true';
 
 const policyPack = {
   allowedLocations: ['australiaeast', 'australiasoutheast'],
@@ -667,7 +671,7 @@ function makeId(prefix) {
 
 function seedState() {
   const baseBudget = 25000;
-  return {
+  const seeded = {
     metadata: {
       version: '1.1.0',
       createdAt: nowIso(),
@@ -794,6 +798,11 @@ function seedState() {
     },
     audit: [],
   };
+  if (!SEED_SAMPLE_DATA) {
+    seeded.requests = [];
+    seeded.budgets = [];
+  }
+  return seeded;
 }
 
 function loadState() {
