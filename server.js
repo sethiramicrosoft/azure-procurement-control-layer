@@ -1260,6 +1260,17 @@ function handleApi(req, res, pathname) {
     });
   }
 
+  if (req.method === 'GET' && pathname === '/api/me') {
+    return send(res, 200, {
+      identity: {
+        actor: identity.actor,
+        roles: Array.isArray(identity.roles) ? identity.roles : [],
+        authSource: identity.authSource || AUTH_MODE,
+        principalId: identity.principalId || null,
+      },
+    });
+  }
+
   if (req.method === 'GET' && pathname === '/api/readiness') {
     const issues = getProductionReadinessIssues();
     const ready = process.env.NODE_ENV !== 'production' ? true : issues.length === 0;

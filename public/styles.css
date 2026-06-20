@@ -47,6 +47,25 @@ body {
 
 h1, h2, h3, p { margin-top: 0; }
 .lead { color: var(--muted); max-width: 60ch; }
+.view-switcher {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  margin-top: 10px;
+}
+.view-btn {
+  padding: 8px 12px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: #0b1528;
+  color: var(--text);
+  font-weight: 600;
+}
+.view-btn.active {
+  background: linear-gradient(135deg, #2d6cdf, #6aa5ff);
+  border-color: transparent;
+}
 
 .hero-card, .policy, .budget-list, .requests, .audit {
   display: grid;
@@ -127,6 +146,9 @@ button {
   gap: 12px;
   flex-wrap: wrap;
   align-items: center;
+}
+.request-actions .hidden {
+  display: none;
 }
 
 .badge {

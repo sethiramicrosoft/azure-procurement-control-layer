@@ -3,6 +3,8 @@ const state = {
   summary: null,
   policy: null,
   config: null,
+  identity: null,
+  activeView: 'procurement',
 };
 
 const el = id => document.getElementById(id);
@@ -14,6 +16,43 @@ function formatCurrency(amount, currency = 'AUD') {
 function badgeForStatus(status) {
   const cls = ['approved', 'deployed'].includes(status) ? 'good' : ['blocked', 'rejected'].includes(status) ? 'bad' : 'warn';
   return `<span class="badge ${cls}">${status}</span>`;
+}
+
+function getActionRole(action) {
+  if (['approve', 'reject', 'exception-approve'].includes(action)) return 'procurement';
+  if (action === 'exception') return 'engineer';
+  if (action === 'deploy') return 'platform';
+  return 'all';
+}
+
+function allowedInView(actionRole, activeView) {
+  if (activeView === 'all') return true;
+  if (actionRole === 'all') return true;
+  return actionRole === activeView;
+}
+
+function renderIdentity() {
+  const pill = el('identity-pill');
+  if (!pill) return;
+  if (!state.identity) {
+    pill.textContent = 'Identity unavailable';
+    return;
+  }
+  const roles = Array.isArray(state.identity.roles) ? state.identity.roles.join(', ') : '';
+  pill.textContent = `${state.identity.actor} | ${roles || 'no roles'}`;
+}
+
+function setActiveView(nextView) {
+  state.activeView = nextView;
+  document.querySelectorAll('.view-btn').forEach(button => {
+    button.classList.toggle('active', button.dataset.view === state.activeView);
+  });
+  document.querySelectorAll('[data-section]').forEach(section => {
+    const visibility = String(section.dataset.section || '').split(/\s+/).filter(Boolean);
+    const isVisible = state.activeView === 'all' || visibility.includes(state.activeView);
+    section.style.display = isVisible ? '' : 'none';
+  });
+  renderRequests();
 }
 
 async function api(path, options) {
@@ -73,6 +112,12 @@ function requestCard(request) {
     : '';
   const thresholds = (request.budgetThresholds || []).length ? `${(request.budgetThresholds || []).join('%, ')}%` : 'n/a';
   const budgetLine = `<div class="muted">Budget cap: ${formatCurrency(request.desiredBudgetCap || 0)} | Thresholds: ${thresholds}</div>`;
+  const approveHidden = allowedInView(getActionRole('approve'), state.activeView) ? '' : 'hidden';
+  const rejectHidden = allowedInView(getActionRole('reject'), state.activeView) ? '' : 'hidden';
+  const exceptionHidden = allowedInView(getActionRole('exception'), state.activeView) ? '' : 'hidden';
+  const exceptionApproveHidden = allowedInView(getActionRole('exception-approve'), state.activeView) ? '' : 'hidden';
+  const deployHidden = allowedInView(getActionRole('deploy'), state.activeView) ? '' : 'hidden';
+
   return `
     <article class="request-card">
       <div class="request-top">
@@ -92,11 +137,11 @@ function requestCard(request) {
       ${budgetLine}
       ${exceptionLine}
       <div class="request-actions">
-        <button data-action="approve" data-id="${request.id}">Approve</button>
-        <button data-action="reject" data-id="${request.id}">Reject</button>
-        <button data-action="exception" data-id="${request.id}">Request Exception</button>
-        <button data-action="exception-approve" data-id="${request.id}">Approve Exception</button>
-        <button data-action="deploy" data-id="${request.id}">Deploy</button>
+        <button class="${approveHidden}" data-action="approve" data-id="${request.id}">Approve</button>
+        <button class="${rejectHidden}" data-action="reject" data-id="${request.id}">Reject</button>
+        <button class="${exceptionHidden}" data-action="exception" data-id="${request.id}">Request Exception</button>
+        <button class="${exceptionApproveHidden}" data-action="exception-approve" data-id="${request.id}">Approve Exception</button>
+        <button class="${deployHidden}" data-action="deploy" data-id="${request.id}">Deploy</button>
       </div>
     </article>
   `;
@@ -121,6 +166,12 @@ function renderAudit() {
 }
 
 async function load() {
+  try {
+    const me = await api('/api/me');
+    state.identity = me.identity;
+  } catch {
+    state.identity = null;
+  }
   const cfg = await api('/api/config');
   state.config = cfg.config;
   state.summary = await api('/api/summary');
@@ -132,8 +183,10 @@ async function load() {
   state.audit = audit.audit;
   renderSummary();
   renderConfigForm();
+  renderIdentity();
   renderRequests();
   renderAudit();
+  setActiveView(state.activeView);
 }
 
 async function onSubmit(event) {
@@ -245,6 +298,9 @@ async function onAction(event) {
 document.getElementById('request-form').addEventListener('submit', onSubmit);
 document.getElementById('config-form').addEventListener('submit', onSaveConfig);
 document.getElementById('refresh').addEventListener('click', load);
+document.querySelectorAll('.view-btn').forEach(button => {
+  button.addEventListener('click', () => setActiveView(button.dataset.view));
+});
 load().catch(err => {
   document.body.insertAdjacentHTML('afterbegin', `<div style="padding:16px;color:#ff7a7a">Failed to load APCL demo: ${err.message}</div>`);
 });

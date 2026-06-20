@@ -12,6 +12,15 @@
         <p class="eyebrow">Azure Procurement Control Layer</p>
         <h1>Procurement-aware Azure governance.</h1>
         <p class="lead">APCL turns procurement rules into enforceable cloud controls: request, approve, deploy, reconcile.</p>
+        <div class="view-switcher">
+          <span class="muted">View:</span>
+          <button type="button" class="view-btn active" data-view="procurement">Procurement</button>
+          <button type="button" class="view-btn" data-view="engineer">Engineer</button>
+          <button type="button" class="view-btn" data-view="finance">Finance</button>
+          <button type="button" class="view-btn" data-view="platform">Platform</button>
+          <button type="button" class="view-btn" data-view="all">All</button>
+          <span id="identity-pill" class="badge">Loading identity...</span>
+        </div>
       </div>
       <section class="hero-card">
         <div class="stat">
@@ -30,7 +39,7 @@
     </header>
 
     <main class="grid">
-      <section class="panel">
+      <section class="panel" data-section="platform">
         <h2>Control plane inputs</h2>
         <form id="config-form" class="form">
           <input name="managerApproverEmail" placeholder="Manager approver email" required />
@@ -45,7 +54,7 @@
         </form>
       </section>
 
-      <section class="panel">
+      <section class="panel" data-section="engineer">
         <h2>New request</h2>
         <form id="request-form" class="form">
           <input name="title" placeholder="Request title" required />
@@ -76,7 +85,7 @@
         </form>
       </section>
 
-      <section class="panel">
+      <section class="panel" data-section="finance platform procurement">
         <h2>Governance profile</h2>
         <div id="policy" class="policy"></div>
         <h3>Budgets</h3>
@@ -84,7 +93,7 @@
       </section>
     </main>
 
-    <section class="panel">
+    <section class="panel" data-section="engineer procurement platform finance">
       <div class="section-head">
         <h2>Requests</h2>
         <button id="refresh">Refresh</button>
@@ -92,7 +101,7 @@
       <div id="requests" class="requests"></div>
     </section>
 
-    <section class="panel">
+    <section class="panel" data-section="procurement finance platform">
       <h2>Audit trail</h2>
       <div id="audit" class="audit"></div>
     </section>
